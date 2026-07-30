@@ -50,6 +50,16 @@ markers = [
 ]
 addopts = "-m 'not llm and not vision and not db'"   # db excluded too — the mandated between-step `uv run pytest -x -q` must stay green without Docker running
 
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["DTZ001"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
