@@ -43,6 +43,7 @@ explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]   # lets tests import corpusgen/ (not an installed package, lives at repo root)
 markers = [
   "db: needs the dockerized postgres",
   "llm: makes live LLM calls (needs ANTHROPIC_API_KEY)",
