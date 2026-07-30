@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<smses count="4">
+  <sms protocol="0" address="+15551234567" date="1736935200000" type="1" subject="null" body="Hey, are we still on for tomorrow?" toa="null" sc_toa="null" service_center="null" read="1" status="-1" locked="0" date_sent="1736935190000" sub_id="1" readable_date="Jan 15, 2025 10:00:00 AM" contact_name="Sarah Kovacs" />
+  <sms protocol="0" address="+15551234567" date="1736936000000" type="2" subject="null" body="Yes! See you at 6" toa="null" sc_toa="null" service_center="null" read="1" status="-1" locked="0" date_sent="1736936000000" sub_id="1" readable_date="Jan 15, 2025 10:13:20 AM" contact_name="Sarah Kovacs" />
+  <sms protocol="0" address="+15559998888" date="1736937000000" type="3" subject="null" body="draft not sent yet" toa="null" sc_toa="null" service_center="null" read="1" status="-1" locked="0" date_sent="null" sub_id="1" readable_date="Jan 15, 2025 10:30:00 AM" contact_name="null" />
+  <mms date="1736938000000" msg_box="1" m_type="132" sub_id="1" read="1" sub="null" readable_date="Jan 15, 2025 10:46:40 AM">
+    <parts>
+      <part seq="0" ct="application/smil" name="null" chset="null" cd="null" fn="null" cid="&lt;smil&gt;" cl="smil.xml" ctt_s="null" ctt_t="null" text='&lt;smil&gt;&lt;head&gt;&lt;layout&gt;&lt;root-layout/&gt;&lt;/layout&gt;&lt;/head&gt;&lt;body&gt;&lt;par dur="5000ms"&gt;&lt;text src="text.txt"/&gt;&lt;/par&gt;&lt;/body&gt;&lt;/smil&gt;' />
+      <part seq="1" ct="text/plain" name="null" chset="106" cd="null" fn="null" cid="&lt;text.txt&gt;" cl="text.txt" text="Where is Santa Clause?" />
+    </parts>
+    <addrs>
+      <addr address="+15551112222" type="137" charset="106" />
+      <addr address="+15559990000" type="151" charset="106" />
+    </addrs>
+  </mms>
+</smses>
