@@ -81,4 +81,67 @@ for s in report.spurious:
 Then paste the P/R/F1-by-kind table and the misses/spurious lists into this file, dated,
 below this section — do not overwrite the pending-status note above until that's done.
 
-## RAG eval (Task 16) — see below, also BASELINE PENDING API KEY
+Once real numbers land here, `tests/test_extraction_eval.py`'s live test should gain an
+actual regression-threshold assertion (it currently only asserts non-negative, deliberately
+— see the module: "Do not fabricate baseline numbers").
+
+## RAG eval (Task 16) — BASELINE PENDING API KEY
+
+Same blocker: no `ANTHROPIC_API_KEY` in this environment. The harness
+(`evals/rag_eval.run_rag_eval`) is implemented and unit-tested with everything stubbed —
+retrieval, answer synthesis, and all three ragas metrics — in `tests/test_rag_eval.py` (4
+tests, all green, verifying the harness calls each metric with the exact kwargs its real
+`ascore()` signature takes: `faithfulness(user_input, response, retrieved_contexts)`,
+`answer_relevancy(user_input, response)` — no `reference` — and
+`context_precision(user_input, reference, retrieved_contexts)`).
+
+The live run (real ragas judge = `claude-haiku-4-5` via the plain `anthropic` SDK, real
+local `sentence-transformers/all-MiniLM-L6-v2` ragas embeddings, all 25
+`evals/questions.yaml` questions) is
+`tests/test_rag_eval.py::test_live_rag_eval_meets_thresholds`, marked `@pytest.mark.llm`,
+self-skips without the key, and — unlike the extraction eval's live test — DOES assert the
+plan's starting thresholds directly (`FAITHFULNESS_THRESHOLD=0.85`,
+`ANSWER_RELEVANCY_THRESHOLD=0.80`, `CONTEXT_PRECISION_THRESHOLD=0.70`), since those are the
+plan's own explicit starting values, not a number this session invented.
+
+**Run once the key exists:**
+
+```bash
+# ensure the db container is up (docker compose up -d db) and .env/ANTHROPIC_API_KEY is set
+uv run pytest -m llm tests/test_rag_eval.py -q
+```
+
+For per-question detail (which question failed which metric, not just the pass/fail the
+pytest assertions give):
+
+```bash
+uv run python -c "
+from pathlib import Path
+from locket.store import Store
+from evals.extraction_eval import run_extraction_pipeline
+from evals.rag_eval import load_questions, run_rag_eval
+
+store = Store('postgresql://locket:locket@localhost:5432/locket')
+with store._conn.cursor() as cur:
+    cur.execute('TRUNCATE raw_items, facts, entities, fact_history, merge_proposals RESTART IDENTITY CASCADE')
+store._conn.commit()
+
+run_extraction_pipeline(store, Path('demo_corpus'))
+questions = load_questions(Path('evals/questions.yaml'))
+result = run_rag_eval(store, questions)
+print('faithfulness', result.faithfulness)
+print('answer_relevancy', result.answer_relevancy)
+print('context_precision', result.context_precision)
+for q in result.per_question:
+    print(q.question, '->', q.faithfulness, q.answer_relevancy, q.context_precision)
+"
+```
+
+**CI:** `.github/workflows/eval.yml` runs both live eval suites (`pytest -m llm
+tests/test_extraction_eval.py tests/test_rag_eval.py`) on `workflow_dispatch` and a nightly
+cron (07:00 UTC), against a pgvector service container, needing the `ANTHROPIC_API_KEY`
+repo secret. It is a SEPARATE workflow file from `.github/workflows/ci.yml` — `ci.yml`'s
+`test`/`db` jobs and their `on: [push, pull_request]` trigger are untouched (verified: `git
+diff --stat .github/workflows/ci.yml` against this session's start is empty). Add the
+`ANTHROPIC_API_KEY` secret in the repo settings before expecting a real signal from this
+workflow — until then, both eval tests skip cleanly (not fail) inside it.

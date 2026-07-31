@@ -1,0 +1,107 @@
+# RAG eval question set (Task 16) — 25 questions over the synthetic persona corpus.
+# `reference` is a single string (ragas 0.4.3's ContextPrecisionWithReference validates a
+# string, not a v0.3-era `ground_truths` list). Every reference traces to the same
+# corpusgen/conversations.json content evals/gold/persona_gold.yaml cites — see that file's
+# per-entry message-index comments for the underlying source messages.
+# `kinds` tags which locket.models.FactKind(s) the question exercises (informational; not
+# consumed by the matcher, useful for a future by-kind RAG breakdown).
+
+- question: "Where did the group have Cory Davis's birthday dinner?"
+  reference: "Bertucci's Trattoria"
+  kinds: [event]
+
+- question: "What day is Cory Davis's birthday?"
+  reference: "March 3rd"
+  kinds: [event]
+
+- question: "What job did Joshua Vega get?"
+  reference: "Backend engineer at Northwind Robotics"
+  kinds: [event]
+
+- question: "When did Joshua Vega start his new job at Northwind Robotics?"
+  reference: "May 5th"
+  kinds: [event]
+
+- question: "Where did Jeffrey Williams and Sarah Mendes travel together?"
+  reference: "Lisbon"
+  kinds: [event]
+
+- question: "What were the dates of the Lisbon trip?"
+  reference: "June 9th through the 16th"
+  kinds: [event]
+
+- question: "What yoga studio does Sarah Mendes go to?"
+  reference: "Radiant Yoga"
+  kinds: [habit]
+
+- question: "How did Jeffrey Williams and Sarah Mendes first meet?"
+  reference: "They were college roommates freshman year at Boston University"
+  kinds: [relationship]
+
+- question: "How long have Jeffrey Williams and Sarah Mendes been friends?"
+  reference: "Eight years"
+  kinds: [relationship]
+
+- question: "What kind of camera does Kathryn Petrović shoot with?"
+  reference: "An old Contax film camera her father gave her"
+  kinds: [person, preference]
+
+- question: "What breed is Cory Davis's dog Biscuit?"
+  reference: "A beagle"
+  kinds: [relationship]
+
+- question: "Why did Biscuit need an emergency vet visit?"
+  reference: "He ate an entire sock"
+  kinds: [event]
+
+- question: "Who is Joshua Vega dating?"
+  reference: "Kathryn Petrović"
+  kinds: [relationship]
+
+- question: "Where is Kathryn Petrović's solo photography show?"
+  reference: "Frame & Field gallery"
+  kinds: [event]
+
+- question: "When is Jeffrey Williams's birthday?"
+  reference: "October 12th"
+  kinds: [person]
+
+- question: "Where do Kathryn Petrović's parents live?"
+  reference: "Zagreb"
+  kinds: [place]
+
+- question: "When did Kathryn Petrović's parents visit?"
+  reference: "They flew in on April 14th"
+  kinds: [event]
+
+- question: "What did Kathryn Petrović ask Jeffrey Williams to bring back from Lisbon?"
+  reference: "A custard tart"
+  kinds: [event]
+
+- question: "What caused Joshua Vega to almost be late to Cory Davis's birthday dinner?"
+  reference: "His car battery died"
+  kinds: [event]
+
+- question: "How old did Cory Davis turn at his birthday dinner?"
+  reference: "26"
+  kinds: [event]
+
+- question: "What did Sarah Mendes's manager do about her work deadline?"
+  reference: "Pushed it back by two weeks"
+  kinds: [event]
+
+- question: "Who knitted a bandana for Biscuit?"
+  reference: "Kathryn Petrović's mother"
+  kinds: [relationship]
+
+- question: "What time does Biscuit bark at the mail carrier every day?"
+  reference: "2:15pm"
+  kinds: [habit]
+
+- question: "What does Joshua Vega drink a lot of during his onboarding at Northwind?"
+  reference: "Coffee"
+  kinds: [habit]
+
+- question: "Who created the 'team' WhatsApp group?"
+  reference: "Kathryn Petrović"
+  kinds: [event]

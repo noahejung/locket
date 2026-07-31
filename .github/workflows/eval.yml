@@ -1,0 +1,48 @@
+name: eval
+# Separate workflow file (not a job appended to ci.yml) on purpose: the LLM-judge eval
+# suites cost real money per run, so they must NOT share ci.yml's `on: [push, pull_request]`
+# trigger — a new file with its own `on:` block is the cleanest way to give this job a
+# different cadence without touching ci.yml's existing `test`/`db` jobs at all (PLAN.md
+# Task 16 Step 3 / Global Constraints deviation #5).
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 7 * * *"  # nightly, 07:00 UTC
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: locket
+          POSTGRES_PASSWORD: locket
+          POSTGRES_DB: locket
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U locket -d locket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LOCKET_DB_URL: postgresql://locket:locket@localhost:5432/locket
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --group dev
+      - run: PGPASSWORD=locket psql -h localhost -U locket -d locket -f db/init.sql
+      # Both eval suites are gated behind @pytest.mark.llm and self-skip cleanly if
+      # ANTHROPIC_API_KEY is unset -- if the `ANTHROPIC_API_KEY` repo secret is missing,
+      # this step reports skips, not failures, so add the secret before expecting a real
+      # regression signal from this workflow.
+      - run: uv run pytest -m llm tests/test_extraction_eval.py tests/test_rag_eval.py -q
+        # rag_eval's live test asserts FAITHFULNESS_THRESHOLD / ANSWER_RELEVANCY_THRESHOLD /
+        # CONTEXT_PRECISION_THRESHOLD directly, so a regression fails this step.
+        # extraction_eval's live test deliberately does NOT gate on a P/R/F1 threshold yet
+        # -- no real baseline number exists at the time this workflow was written (recorded
+        # as "BASELINE PENDING API KEY" in evals/BASELINE.md), and asserting an invented
+        # threshold would fabricate a regression gate with no evidence behind it. Add a
+        # real threshold assertion to that test once evals/BASELINE.md has measured
+        # numbers.
