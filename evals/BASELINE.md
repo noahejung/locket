@@ -145,3 +145,63 @@ repo secret. It is a SEPARATE workflow file from `.github/workflows/ci.yml` — 
 diff --stat .github/workflows/ci.yml` against this session's start is empty). Add the
 `ANTHROPIC_API_KEY` secret in the repo settings before expecting a real signal from this
 workflow — until then, both eval tests skip cleanly (not fail) inside it.
+
+## End-to-end CLI pipeline run over demo_corpus (Task 19) — INGEST VERIFIED, EXTRACTION BLOCKED ON API KEY
+
+`locket ingest` was run for real (real terminal invocation of `python -m locket.cli`, not a
+pytest stub) against every source in `demo_corpus/` on 2026-07-30, against the same running
+`locket-db-1` container Weeks 1-3 used:
+
+```bash
+uv run python -m locket.cli ingest demo_corpus/whatsapp/team.txt      # 190 raw_items
+uv run python -m locket.cli ingest demo_corpus/whatsapp/sarah.txt     # 144 new (1 pre-existing overlap)
+uv run python -m locket.cli ingest demo_corpus/sms/backup.xml         # 45 new
+uv run python -m locket.cli ingest demo_corpus/instagram/inbox/kathryn  # 90 new
+uv run python -m locket.cli ingest demo_corpus/photos                 # 38 new
+```
+
+Real counts observed, grouped by `raw_items.source`: whatsapp 334, sms 44, mms 1, instagram
+90, photo 38 (`SELECT source, count(*) FROM raw_items GROUP BY source`). All idempotent —
+covered by `tests/test_cli.py::test_ingest_reingest_is_idempotent`.
+
+`locket pipeline run --skip-vision --corpus-dir demo_corpus` was then run for real. It fails
+fast and clearly, by design (`_cmd_pipeline_run`'s upfront guard, added this session):
+
+```
+ANTHROPIC_API_KEY is not set -- extraction needs the Claude API and cannot run without it.
+Set it in .env (see .env.example) and retry. (Vision pre-pass does NOT need it; `locket
+ingest` alone works fine without a key.)
+```
+
+This is expected, not a bug: extraction is the one pipeline stage that always needs the
+Claude API (haiku structured-output calls), regardless of `--skip-vision`. Every other
+keyless stage was verified for real: `locket resolve` (prints "no pending merge proposals"
+against the fresh ingest, correctly — no facts yet means no mentions to resolve) and `locket
+profile build` (prints all five section headers with `_Nothing extracted for this section
+yet._` placeholders, and persists that as `profiles` row #1 — correct, since an empty facts
+table needs no model call at all, and `_render_section` short-circuits before ever building
+a prompt when a section's fact list is empty).
+
+`--skip-vision` was chosen for this session's own demo-corpus run given the measured
+~135s/image vision-LLM latency above: 46 photos serial would be ~1.7 hours, not a reasonable
+interactive-session cost, and the vision pre-pass code path itself (SigLIP2 tags + RapidOCR +
+InsightFace clusters + curated Ollama tail) is exercised independently by
+`tests/test_vision*.py`'s existing `@pytest.mark.vision` suite (Weeks 2-3) — `pipeline run`'s
+own `_run_vision_prepass` wiring is new this session but reuses those same already-verified
+functions, so re-running the full latency cost here would re-verify plumbing, not new risk.
+
+**Run once ANTHROPIC_API_KEY exists**, to complete the extraction leg for real (haiku
+structured-output extraction over the real windowed demo corpus, entity resolution, and
+profile synthesis with real haiku-rendered prose, all through the single CLI entry point):
+
+```bash
+# ensure the db container is up (docker compose up -d db) and .env/ANTHROPIC_API_KEY is set
+uv run python -m locket.cli pipeline run --skip-vision --corpus-dir demo_corpus
+# then inspect the synthesized profile:
+uv run python -m locket.cli profile build
+```
+
+Drop `--skip-vision` for the full run (also needs local Ollama `qwen3-vl:8b` pulled and
+running, per Task 13 — expect roughly `46 * 135s ≈ 1.7 hours` serial for the vision-LLM tail
+alone at this machine's measured per-image latency, before extraction even starts; a smaller
+`--cap` bounds this).

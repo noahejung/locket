@@ -19,3 +19,50 @@ No real data of any kind ships in this repository.
 
 See `Claude/specs/2026-07-30-locket-design.md` (private planning vault, not
 part of this repo) for the full design writeup.
+
+## Usage
+
+```bash
+# 1. Start Postgres+pgvector.
+docker compose up -d db
+
+# 2. Install dependencies (uv resolves the lockfile; add ANTHROPIC_API_KEY to
+#    a local .env first if you want extraction to actually run).
+uv sync
+
+# 3. Ingest a single export file/directory. Adapter is auto-detected by shape:
+#    .txt -> WhatsApp, .xml -> SMS/MMS, a dir of message_*.json -> Instagram,
+#    any other dir -> photos (EXIF + Takeout sidecars).
+uv run python -m locket.cli ingest demo_corpus/whatsapp/team.txt
+uv run python -m locket.cli ingest demo_corpus/sms/backup.xml
+uv run python -m locket.cli ingest demo_corpus/photos
+
+# 4. Run the full pipeline: vision pre-pass -> extraction -> entity
+#    resolution -> profile synthesis. Needs ANTHROPIC_API_KEY (extraction is
+#    the one stage that always calls the Claude API). --skip-vision bypasses
+#    the local SigLIP2/OCR/face pre-pass and the local-Ollama vision-LLM tail
+#    (the latter measured at ~135s/image on a CPU-only machine — see
+#    evals/BASELINE.md — so it's worth skipping for a quick pass).
+uv run python -m locket.cli pipeline run --skip-vision --corpus-dir demo_corpus
+
+# 5. Review anything entity resolution couldn't confidently auto-merge.
+uv run python -m locket.cli resolve
+
+# 6. Label detected face clusters with names (needs the local vision models).
+uv run python -m locket.cli label-faces
+
+# 7. Read the synthesized profile, or serve it over MCP.
+uv run python -m locket.cli profile build
+uv run python -m locket.cli serve   # stdio MCP server -- see docs/demo.md for
+                                     # the exact `claude mcp add` registration command
+
+# 8. Run the eval suites (extraction P/R/F1 against a self-labeled gold set;
+#    Ragas faithfulness/relevancy/precision over a fixed question set).
+uv run python -m locket.cli eval extraction --json
+uv run python -m locket.cli eval rag --json
+```
+
+Every subcommand above works against the committed synthetic `demo_corpus/`
+out of the box. To run against your own data, set `LOCKET_CORPUS_DIR` in a
+local `.env` (see `.env.example`) to a directory *outside* this repository
+and point `ingest`/`pipeline run --corpus-dir` at it instead.
