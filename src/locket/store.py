@@ -458,15 +458,23 @@ class Store:
         return ProfileRow(id=str(row[0]), body=row[1], fact_count=row[2], created_at=row[3])
 
 
-def _jsonable(d: dict[str, Any]) -> dict[str, Any]:
-    """Best-effort make a dict JSON-serializable for fact_history's prev/next jsonb columns
-    (datetimes and other psycopg-returned types need coercing to strings)."""
-    out: dict[str, Any] = {}
-    for k, v in d.items():
-        if isinstance(v, datetime):
-            out[k] = v.isoformat()
-        elif isinstance(v, (list, dict, str, int, float, bool)) or v is None:
-            out[k] = v
-        else:
-            out[k] = str(v)
-    return out
+def _jsonable(value: Any) -> Any:
+    """Best-effort make a value JSON-serializable for fact_history's prev/next jsonb
+    columns. RECURSES into lists/dicts -- a shallow top-level-container check is not enough
+    because psycopg returns some column types as non-JSON-serializable objects nested
+    *inside* an otherwise-plain container (e.g. a `uuid[]` column comes back as
+    `list[uuid.UUID]`, not `list[str]`). Confirmed live: `update_fact` crashed with
+    `TypeError: Object of type UUID is not JSON serializable` on any fact whose `entity_ids`
+    was already populated by an earlier `update_fact` call for the same fact id -- which
+    happens routinely, since `add_fact`'s statement-hash dedup can return an existing fact's
+    id for a repeated statement, and the pipeline's resolution step then calls
+    `update_fact(fact_id, entity_ids=...)` a second time on that same id."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)

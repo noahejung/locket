@@ -122,6 +122,40 @@ def test_update_fact_writes_history_and_mutates(store):
     assert events == ["ADD", "UPDATE", "EXPIRE"]
 
 
+def test_update_fact_a_second_time_with_populated_entity_ids_does_not_crash(store):
+    """Regression: psycopg returns a `uuid[]` column as `list[uuid.UUID]`, not `list[str]`.
+    `update_fact`'s history write reads the fact's CURRENT row as `prev` before applying the
+    new change -- so the second call here has a `prev["entity_ids"]` that is a real populated
+    `list[UUID]` (from the first call), which `_jsonable`'s old shallow (container-type-only)
+    check let straight through to `json.dumps`, raising `TypeError: Object of type UUID is
+    not JSON serializable`. Confirmed live during a real end-to-end `pipeline run`: `add_fact`
+    dedupes on statement hash, so the pipeline's resolution step can legitimately call
+    `update_fact(fact_id, entity_ids=...)` twice for the same fact id."""
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(
+        kind=FactKind.relationship,
+        statement="John and Sarah are friends",
+        confidence=0.8,
+        subjects=["John", "Sarah"],
+        provenance=[raw.id],
+    )
+    fact_id = store.add_fact(fact, embedding=_vec(3.0))
+    entity_a = store.upsert_entity("John", "person", _vec(4.0))
+    entity_b = store.upsert_entity("Sarah", "person", _vec(5.0))
+
+    store.update_fact(fact_id, entity_ids=[entity_a])  # prev.entity_ids is None here -- fine even pre-fix
+    store.update_fact(fact_id, entity_ids=[entity_a, entity_b])  # prev.entity_ids is list[UUID] -- this crashed pre-fix
+
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT entity_ids FROM facts WHERE id = %s", (fact_id,))
+        stored = cur.fetchone()[0]
+        cur.execute("SELECT event FROM fact_history WHERE fact_id = %s ORDER BY id", (fact_id,))
+        events = [r[0] for r in cur.fetchall()]
+    assert {str(e) for e in stored} == {entity_a, entity_b}
+    assert events == ["ADD", "UPDATE", "UPDATE"]
+
+
 def test_search_facts_cosine_ranked_and_valid_at_filter(store):
     raw = _raw(0)
     store.add_raw_items([raw])
