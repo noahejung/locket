@@ -66,6 +66,25 @@ class EntityRow:
 
 
 @dataclass
+class EntityCard:
+    """A plain entity record (no similarity score) -- for listing/lookup by id, distinct
+    from EntityRow which specifically carries a nearest-neighbor search's similarity."""
+
+    id: str
+    name: str
+    kind: str
+    aliases: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ProfileRow:
+    id: str
+    body: str
+    fact_count: int
+    created_at: datetime
+
+
+@dataclass
 class MergeProposal:
     """A tier-3-escalated entity-resolution verdict that didn't clear the auto-merge
     confidence bar — sits in the confirm queue for a human y/n (Task 19's CLI) instead of
@@ -248,6 +267,28 @@ class Store:
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
 
+    def list_facts(self, *, kinds: list[str] | None = None, limit: int = 1000) -> list[FactRow]:
+        """Plain listing (no vector query) -- used by the MCP server's timeline tool and
+        profile synthesis, neither of which needs semantic ranking."""
+        clauses = []
+        params: list[Any] = []
+        if kinds:
+            clauses.append("kind = ANY(%s)")
+            params.append(kinds)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"""
+            SELECT {", ".join(_FACT_COLUMNS)}
+            FROM facts
+            {where}
+            ORDER BY created_at
+            LIMIT %s
+        """
+        params.append(limit)
+        with self._conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        return [_row_to_fact(r) for r in rows]
+
     def get_facts_for_entity(self, entity_id: str) -> list[FactRow]:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -302,6 +343,26 @@ class Store:
             EntityRow(id=str(r[0]), name=r[1], kind=r[2], aliases=list(r[3] or []), similarity=r[4])
             for r in rows
         ]
+
+    def list_entities(self, kind: str | None = None) -> list[EntityCard]:
+        query = "SELECT id, name, kind, aliases FROM entities"
+        params: list[Any] = []
+        if kind is not None:
+            query += " WHERE kind = %s"
+            params.append(kind)
+        query += " ORDER BY name"
+        with self._conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        return [EntityCard(id=str(r[0]), name=r[1], kind=r[2], aliases=list(r[3] or [])) for r in rows]
+
+    def get_entity(self, entity_id: str) -> EntityCard | None:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT id, name, kind, aliases FROM entities WHERE id = %s", (entity_id,))
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return EntityCard(id=str(row[0]), name=row[1], kind=row[2], aliases=list(row[3] or []))
 
     def add_entity_alias(self, entity_id: str, alias: str) -> None:
         """Append `alias` to an entity's aliases array, idempotently (no duplicate if the
@@ -370,6 +431,31 @@ class Store:
                 ("confirmed" if accept else "rejected", proposal_id),
             )
         self._conn.commit()
+
+    # ---- profiles (synthesized living profile, Task 18) ------------------------------
+
+    def save_profile(self, body: str, fact_count: int) -> str:
+        """Insert a new versioned profile snapshot. Never mutates a prior row -- callers
+        (profile.synthesize) decide whether a new snapshot is warranted (e.g. skip when
+        fact_count hasn't changed since the latest one)."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO profiles (body, fact_count) VALUES (%s, %s) RETURNING id",
+                (body, fact_count),
+            )
+            new_id = cur.fetchone()[0]
+        self._conn.commit()
+        return str(new_id)
+
+    def get_latest_profile(self) -> ProfileRow | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, body, fact_count, created_at FROM profiles ORDER BY created_at DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return ProfileRow(id=str(row[0]), body=row[1], fact_count=row[2], created_at=row[3])
 
 
 def _jsonable(d: dict[str, Any]) -> dict[str, Any]:

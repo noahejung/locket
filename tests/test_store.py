@@ -31,7 +31,10 @@ def store():
     s = Store(DB_URL)
     # Isolate each test — truncate everything, cascading through FKs-by-convention.
     with s._conn.cursor() as cur:
-        cur.execute("TRUNCATE raw_items, facts, entities, fact_history RESTART IDENTITY CASCADE")
+        cur.execute(
+            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles "
+            "RESTART IDENTITY CASCADE"
+        )
     s._conn.commit()
     yield s
     s._conn.close()
@@ -221,3 +224,53 @@ def test_get_facts_for_entity(store):
     rows = store.get_facts_for_entity(entity_id)
     assert len(rows) == 1
     assert rows[0].id == fact_id
+
+
+def test_list_facts_filters_by_kind_and_orders_by_created_at(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    pref = Fact(kind=FactKind.preference, statement="John likes hiking", confidence=0.8, provenance=[raw.id])
+    habit = Fact(kind=FactKind.habit, statement="John runs every morning", confidence=0.8, provenance=[raw.id])
+    pref_id = store.add_fact(pref, embedding=_vec(1.0))
+    habit_id = store.add_fact(habit, embedding=_vec(1.0))
+
+    all_rows = store.list_facts()
+    assert [r.id for r in all_rows] == [pref_id, habit_id]
+
+    only_habit = store.list_facts(kinds=["habit"])
+    assert [r.id for r in only_habit] == [habit_id]
+
+
+def test_list_entities_and_get_entity(store):
+    person_id = store.upsert_entity("John", "person", _vec(1.0))
+    place_id = store.upsert_entity("Boston", "place", _vec(-1.0))
+    store.add_entity_alias(person_id, "Johnny")
+
+    people = store.list_entities(kind="person")
+    assert [e.id for e in people] == [person_id]
+
+    everyone = store.list_entities()
+    assert {e.id for e in everyone} == {person_id, place_id}
+
+    card = store.get_entity(person_id)
+    assert card is not None
+    assert card.name == "John"
+    assert card.aliases == ["Johnny"]
+
+    assert store.get_entity("00000000-0000-0000-0000-000000000000") is None
+
+
+def test_save_profile_and_get_latest_profile(store):
+    assert store.get_latest_profile() is None
+
+    first_id = store.save_profile("# Profile v1", fact_count=3)
+    latest = store.get_latest_profile()
+    assert latest is not None
+    assert latest.id == first_id
+    assert latest.body == "# Profile v1"
+    assert latest.fact_count == 3
+
+    second_id = store.save_profile("# Profile v2", fact_count=5)
+    latest = store.get_latest_profile()
+    assert latest.id == second_id
+    assert latest.body == "# Profile v2"

@@ -53,3 +53,16 @@ CREATE TABLE merge_proposals (
   status text NOT NULL DEFAULT 'pending',            -- pending|confirmed|rejected
   created_at timestamptz DEFAULT now()
 );
+
+-- Task 17/18: versioned profile snapshots. Not listed in Task 17's plan "Files" section,
+-- but the MCP server's get_profile tool (Task 17) reads what profile.py's synthesize()
+-- (Task 18) writes, and store.py is the only module allowed to talk to Postgres -- same
+-- rationale as Task 14's merge_proposals addition above. Every synthesize() call that finds
+-- new facts inserts a new row (versioned, never mutated in place); get_profile always reads
+-- the newest one.
+CREATE TABLE profiles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  body text NOT NULL,
+  fact_count integer NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
