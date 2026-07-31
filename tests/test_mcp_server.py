@@ -145,6 +145,47 @@ def test_search_memories_people_filter_narrows_results(store):
     assert sarah_id  # sanity: fixture actually created the entity
 
 
+def test_search_memories_people_filter_unresolvable_name_creates_no_phantom_entity(store):
+    """search_memories is a read-only query tool. A mistyped/unknown name in `people` must
+    not fall through to resolution.resolve()'s ingestion-path fallback
+    (`_resolve_one` -> `store.upsert_entity(...)` on zero tier-1 candidates) -- that would
+    silently insert a phantom entity as a side effect of a search. Unknown names should
+    just contribute no entity ids, exactly like `_lookup_person`'s non-mutating contract
+    for get_person."""
+    _seed_dance_fact(store)
+    mcp = build_server(store)
+    entities_before = len(store.list_entities())
+
+    results = _call(
+        mcp,
+        "search_memories",
+        {"query": "life facts", "people": ["Zzxqvbnm Ploopers"], "limit": 20},
+    )
+
+    entities_after = len(store.list_entities())
+    assert entities_after == entities_before  # no phantom entity created
+    assert results == []  # unknown name contributes no entity ids -> nothing matches
+
+
+def test_search_memories_people_filter_mixes_resolvable_and_unresolvable_names(store):
+    """A known name alongside an unknown one still filters correctly by the known name --
+    the unknown name is simply dropped, not treated as a hard failure."""
+    _seed_dance_fact(store)
+    mcp = build_server(store)
+    entities_before = len(store.list_entities())
+
+    results = _call(
+        mcp,
+        "search_memories",
+        {"query": "life facts", "people": ["Sarah Kovacs", "Zzxqvbnm Ploopers"], "limit": 20},
+    )
+
+    entities_after = len(store.list_entities())
+    assert entities_after == entities_before  # still no phantom entity for the unknown name
+    assert len(results) == 1
+    assert results[0]["statement"] == "Sarah Kovacs is Noah's dance teammate"
+
+
 def test_search_memories_time_range_filter(store):
     _seed_dance_fact(store)
     mcp = build_server(store)

@@ -110,11 +110,27 @@ def _lookup_person(store: Store, name: str, *, backend: EmbeddingBackend, model:
     mention), a query-side lookup must never mutate the store as a side effect of a miss --
     an unrecognized name is just "not found", not a newly-created phantom entity. Checks
     for at least one tier-1 candidate before delegating to resolve() at all."""
-    embedding = backend.embed_query(name)
-    candidates = store.nearest_entities(embedding, k=15)
-    if not any(c.similarity >= SIMILARITY_FLOOR for c in candidates):
-        return None
-    return resolve(store, [name], model=model).get(name)
+    return _lookup_people(store, [name], backend=backend, model=model).get(name)
+
+
+def _lookup_people(
+    store: Store, names: list[str], *, backend: EmbeddingBackend, model: Any | None
+) -> dict[str, str]:
+    """Batched read-only name lookup shared by get_person and search_memories's `people`
+    filter. Same non-mutating contract as `_lookup_person`: only names with at least one
+    tier-1 candidate (SIMILARITY_FLOOR) are handed to resolve() at all, so a mistyped or
+    unknown name is silently dropped from the result dict instead of `_resolve_one`'s
+    ingestion-path fallback (`store.upsert_entity(...)`) creating a phantom entity as a
+    side effect of a read-only query."""
+    resolvable = []
+    for name in names:
+        embedding = backend.embed_query(name)
+        candidates = store.nearest_entities(embedding, k=15)
+        if any(c.similarity >= SIMILARITY_FLOOR for c in candidates):
+            resolvable.append(name)
+    if not resolvable:
+        return {}
+    return resolve(store, resolvable, model=model)
 
 
 def _synthesize(question: str, rows: list[FactRow], *, model: Any | None) -> str:
@@ -154,7 +170,9 @@ def build_server(
         embedding = active_backend.embed_query(query)
         rows = store.search_facts(embedding, limit=limit)
         if people:
-            entity_ids = set(resolve(store, people, model=resolve_model).values())
+            entity_ids = set(
+                _lookup_people(store, people, backend=active_backend, model=resolve_model).values()
+            )
             rows = [r for r in rows if entity_ids & set(r.entity_ids)]
         if time_range:
             start, end = time_range[0], time_range[1]
