@@ -205,3 +205,118 @@ Drop `--skip-vision` for the full run (also needs local Ollama `qwen3-vl:8b` pul
 running, per Task 13 — expect roughly `46 * 135s ≈ 1.7 hours` serial for the vision-LLM tail
 alone at this machine's measured per-image latency, before extraction even starts; a smaller
 `--cap` bounds this).
+
+## Local backend (informal, not the official baseline) — 2026-07-31
+
+Added `locket.llm.get_chat_model`: a backend-selection seam (`LOCKET_LLM_BACKEND=anthropic`
+| `ollama`, defaulting to `ollama` when no `ANTHROPIC_API_KEY` is set) so extraction,
+resolution, profile rendering, and `answer_question` can all run against a local Ollama
+model instead of the Claude API, with zero code changes to the LangGraph extraction graph
+itself (`langchain-ollama==1.1.0`'s `ChatOllama.with_structured_output(..., method=
+"json_schema", include_raw=True)` returns the identical `{"raw","parsed","parsing_error"}`
+shape as `ChatAnthropic`'s — verified live against the installed package, not assumed).
+**These numbers are informal** — a different local model, different hardware, or the
+official `claude-haiku-4-5` baseline (still pending `ANTHROPIC_API_KEY`, see above) will all
+differ from what's recorded here. Kept as a clearly separate section for exactly that reason.
+
+### Model comparison: which local model to default to
+
+Three candidate local text models were tried against real `demo_corpus/whatsapp/team.txt`
+extraction windows (this machine, CPU-only Ollama, `format=ExtractionResult.model_json_schema()`,
+`temperature=0`):
+
+| model | source | 3-window times | notes |
+|---|---|---|---|
+| `qwen3-vl:8b` | already pulled (this repo's vision model) | did not return within 5 min on a single 2-message window | Ollama reports a "thinking" capability for this model. Neither `think=False` (raw `ollama.chat()`/HTTP API) nor `reasoning=False` (`ChatOllama`) suppressed its `<think>` reasoning trace — a plain "say hello in one word" prompt still emitted a ~280-token `<think>` block, 32s end-to-end (~7 tok/s on this box, only 2.27/6.2GB of the model in VRAM). Adding a JSON-schema `format` on top of that made even a trivial 2-message window not return in 5 minutes. **Disqualified as a text-extraction model** — it remains `vision_llm.py`'s image-description model (already measured to tolerate ~140s/image there; vision is a fundamentally different, already-slow workload). |
+| `qwen2.5:3b-instruct` | already pulled locally, no download | 9.8s / 2.7s / 1.4s (13.8s total) | Valid schema output, no parsing errors, ~10x faster than gemma3:12b below. But facts skewed toward noise: on the largest (26-item) window it produced bare `person | Jeffrey Williams` / `person | Cory Davis` entries with no content beyond a name, mixed in with legitimate facts (9 facts total on that window). |
+| `gemma3:12b` | pulled for this comparison (`ollama pull gemma3:12b`, ~8.1GB) | 131.8s / 27.3s / 10.0s (169.1s total) | ~10x slower, but denser/more accurate facts on the *same* largest window (8 facts, no bare-name noise): a `habit` ("ate a bagel alone at 9pm on his birthday last year"), a `preference` ("enjoys carbonara from Bertucci's Trattoria"), and specific event details ("dinner at Bertucci's ... March 3rd at 7pm") that `qwen2.5:3b-instruct` did not surface at all. **Chosen as the default** (`LOCKET_LOCAL_MODEL` env var, `DEFAULT_LOCAL_TEXT_MODEL` in `src/locket/llm.py`) — for a personal-context engine whose facts feed a citable profile and an `answer_question` tool, completeness/accuracy outweighs the latency cost, and 130s for the largest window measured is still inside `vision_llm.py`'s already-accepted ~140s/image local-model tolerance. |
+
+Full side-by-side transcript for the largest window (`Kathryn Petrović created group "team"` ...
+Cory Davis's birthday dinner), same input, same schema:
+
+```
+=== qwen2.5:3b-instruct (9 facts) ===
+ - event | Kathryn Petrović created group 'team'
+ - person | Jeffrey Williams
+ - event | Cory Davis mentioned his birthday is March 3rd
+ - person | Joshua Vega
+ - event | Kathryn Petrović reminded Cory Davis about his birthday last year
+ - person | Cory Davis
+ - event | Joshua Vega agreed with Cory Davis's opinion about the carbonara at Bertucci's Trattoria
+ - person | Jeffrey Williams
+ - event | Kathryn Petrović booked a table at Bertucci's Trattoria for Cory Davis' birthday dinner
+=== gemma3:12b (8 facts) ===
+ - event | Kathryn Petrović created group "team"
+ - relationship | Cory Davis is part of the "team" group.
+ - event | Cory Davis' birthday is on March 3rd.
+ - habit | Last year, Cory Davis ate a bagel alone at 9pm on his birthday.
+ - preference | Cory Davis enjoys carbonara from Bertucci's Trattoria.
+ - event | The group plans to have dinner at Bertucci's Trattoria downtown.
+ - event | The dinner at Bertucci's is scheduled for March 3rd at 7pm.
+ - person | Biscuit says hi.
+```
+
+Set `LOCKET_LOCAL_MODEL=qwen2.5:3b-instruct` for a much faster, lower-quality run (e.g. while
+iterating on adapters/chunking, not a real corpus pass).
+
+### A real bug this run surfaced: `store.py`'s `_jsonable` and UUID arrays
+
+The first full end-to-end attempt with the local backend got all the way through extraction
+(all 5 sources, 507 raw items) and crashed during entity resolution:
+`TypeError: Object of type UUID is not JSON serializable`, inside
+`update_fact`'s `json.dumps(_jsonable(prev))` call. Root cause: `_jsonable` only checked the
+*container's* type (`isinstance(v, (list, dict, ...))`) and passed matching containers
+through unconverted — it never recursed into the container's *elements*. Postgres's
+`entity_ids uuid[]` column comes back from psycopg as `list[uuid.UUID]`, not `list[str]`, so
+any `update_fact` call whose `prev` row already had a populated `entity_ids` crashed. This is
+pre-existing and backend-independent (nothing to do with local vs. Claude-API extraction) —
+it just had never been hit by a real full pipeline run before, because `add_fact`'s
+statement-hash dedup returning an *existing* fact id (routine on a 268-fact corpus with
+several near-duplicate statements) is what makes the resolution loop call `update_fact(...,
+entity_ids=...)` a second time on the same fact id, and only the *second* call has a
+non-empty `prev.entity_ids` to trip over. Fixed by making `_jsonable` recurse into
+list/dict elements (`src/locket/store.py`); regression test added at
+`tests/test_store.py::test_update_fact_a_second_time_with_populated_entity_ids_does_not_crash`
+(`-m db`, reproduces the exact scenario against the real Postgres container).
+
+### Real full pipeline run
+
+`locket pipeline run --skip-vision --corpus-dir demo_corpus` run for real (terminal
+invocation of `python -m locket.cli`, not a pytest stub), keylessly (`ANTHROPIC_API_KEY`
+unset throughout — `resolve_backend` picked `ollama`, `LOCKET_LOCAL_MODEL` at its default
+`gemma3:12b`), against every source in `demo_corpus/` (507 raw items across whatsapp x2, sms,
+instagram, photos — 181 extraction windows total).
+
+**Wall time: ~71 minutes**, end to end (extraction + resolution + profile synthesis, this
+third attempt — the first two attempts had already paid extraction's compute cost before
+hitting the `store.py` bug above, so 71 minutes is one clean successful pass, not a low
+estimate inflated by retries). CLI's own summary:
+
+```json
+{
+  "sources": 5,
+  "raw_items_inserted": 0,
+  "facts_created": 280,
+  "mentions_seen": 31
+}
+```
+
+(`raw_items_inserted: 0` because this was re-run against data already ingested by the
+earlier crashed attempts — `add_raw_items` is idempotent by design, so this is expected, not
+a bug. `facts_created` counts every fact extracted this pass, including ones that
+`add_fact`'s hash-dedup folded into an already-existing row.)
+
+Final store state after the run: **268 unique facts** (event 103, relationship 63,
+preference 42, person 25, event/place 16, habit 19 — `SELECT kind, count(*) FROM facts GROUP
+BY kind`), **19 entities**, and a synthesized profile persisted (`profiles` table, `id`
+generated, `fact_count=268`). Spot-checked against `docs/demo.md`'s three scripted demo
+questions — the synthesized profile's "Identity"/"People" sections directly contain the
+expected answers, e.g. `"Joshua Vega will work at Northwind Robotics"` and `"Jeffrey Williams
+and Sarah Mendes are going to Lisbon"`, both correctly cited to `[fact:<id>]` markers.
+
+`locket resolve` and `locket profile build` were already keyless before this task (see the
+pending-on-key section above) and are unaffected here — this run is the first time
+`pipeline run`'s extraction leg has ever completed for real against the full demo corpus.
+The official `claude-haiku-4-5` baseline (extraction P/R/F1 against the gold set, RAG eval)
+remains pending `ANTHROPIC_API_KEY` — nothing here substitutes for that; this section exists
+only to prove the keyless path works and to record its real, honestly-slower cost.

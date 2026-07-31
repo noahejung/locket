@@ -42,10 +42,11 @@ uv run python -m locket.cli ingest demo_corpus/whatsapp/team.txt
 uv run python -m locket.cli ingest demo_corpus/sms/backup.xml
 uv run python -m locket.cli ingest demo_corpus/photos
 
-# Needs ANTHROPIC_API_KEY (see .env.example) — extraction is the one stage
-# that always calls the Claude API. --skip-vision bypasses the local vision
-# pre-pass + Ollama vision-LLM tail (~135s/image measured — see
-# evals/BASELINE.md — worth skipping for a quick pass).
+# No ANTHROPIC_API_KEY needed — with no key set, extraction/resolution/
+# profile all run against a local Ollama model by default (see "Running
+# fully local" below). --skip-vision bypasses the local vision pre-pass +
+# Ollama vision-LLM tail (~135s/image measured — see evals/BASELINE.md —
+# worth skipping for a quick pass).
 uv run python -m locket.cli pipeline run --skip-vision --corpus-dir demo_corpus
 
 uv run python -m locket.cli profile build
@@ -60,6 +61,41 @@ and the exact Claude Desktop registration JSON block:
 To run against your own data instead of the demo corpus, set
 `LOCKET_CORPUS_DIR` in a local `.env` (never inside this repo — see
 `.env.example`) and point `ingest` / `pipeline run --corpus-dir` at it.
+
+## Running fully local (no API key)
+
+Every LLM call locket makes — extraction, entity resolution, profile
+rendering, and the MCP server's `answer_question` — goes through one
+backend-selection seam, `locket.llm.get_chat_model`. It picks between two
+backends:
+
+- **`anthropic`** (`ChatAnthropic`, real network calls to Claude, higher
+  quality, costs money): used automatically when `ANTHROPIC_API_KEY` is set,
+  or when you force it with `LOCKET_LLM_BACKEND=anthropic`.
+- **`ollama`** (`ChatOllama`, a local Ollama server, free, no data leaves
+  your machine): the default when no API key is present. `locket pipeline
+  run` no longer refuses to run keylessly — it just uses this backend
+  instead.
+
+Requirements: an Ollama server running locally (`ollama serve`, or the
+desktop app) with the text model pulled — `ollama pull gemma3:12b` (the
+default, ~8GB) or set `LOCKET_LOCAL_MODEL=qwen2.5:3b-instruct` for a
+smaller, already-common model. `OLLAMA_HOST` is respected if you want to
+point at a different machine's Ollama (e.g. over Tailscale) instead of
+`localhost:11434` — locket does not read or override it itself.
+
+**Honest quality/speed tradeoff, measured on this project's dev machine
+(CPU-only Ollama):** the local backend is markedly slower and somewhat
+lower-quality than the Claude API backend. `gemma3:12b` took roughly 10-130s
+per extraction window (vs. sub-second-to-a-few-seconds for `claude-haiku-4-5`)
+and produced fewer, though more information-dense, facts per window than a
+smaller local model (`qwen2.5:3b-instruct`, ~10x faster but noisier — see
+`src/locket/llm.py`'s module docstring for the side-by-side). Vision
+(`qwen3-vl:8b`) already ran local-only regardless of this setting, at its own
+separately-measured ~135s/image. Full real pipeline-run numbers (fact
+counts, wall time) for the local backend are in `evals/BASELINE.md`'s
+"local backend (informal)" section — the official baseline stays the
+Claude API run, pending a real key.
 
 ## Privacy posture
 

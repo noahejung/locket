@@ -2,8 +2,10 @@
 
 Everything below runs against the committed synthetic `demo_corpus/` — five
 invented personas, generated conversations, staged AI-generated-face photos.
-No real data is involved. Steps marked **(needs ANTHROPIC_API_KEY)** are the
-only ones that call the Claude API; everything else works with zero keys.
+No real data is involved. Steps marked **(needs ANTHROPIC_API_KEY)** call the
+Claude API specifically; the pipeline run itself needs no key at all — with
+none set it runs against a local Ollama model instead (see README's "Running
+fully local" section).
 
 ## 0. Setup (once)
 
@@ -28,16 +30,19 @@ the WhatsApp dash/bracket parser, the Instagram mojibake fix, the streaming
 SMS/MMS XML parser, and the EXIF/Takeout-sidecar photo adapter all work on
 real (synthetic) export formats.
 
-## 2. Run the pipeline **(needs ANTHROPIC_API_KEY)**
+## 2. Run the pipeline
 
 ```bash
 uv run python -m locket.cli pipeline run --skip-vision --corpus-dir demo_corpus
 ```
 
-Windows the ingested messages, extracts typed facts via the LangGraph
-extraction graph (`claude-haiku-4-5`, escalating to `claude-sonnet-5` on
-repeated validation failures), resolves "Sarah Mendes" / `sarah.mendes` /
-"Sarah M ⭐" into one entity, and synthesizes the profile. `--skip-vision`
+Windows the ingested messages and extracts typed facts via the LangGraph
+extraction graph, resolves "Sarah Mendes" / `sarah.mendes` / "Sarah M ⭐"
+into one entity, and synthesizes the profile. With `ANTHROPIC_API_KEY` set,
+extraction uses `claude-haiku-4-5` (escalating to `claude-sonnet-5` on
+repeated validation failures); with no key, it runs keylessly against a
+local Ollama model instead (`gemma3:12b` by default — much slower and
+somewhat lower-quality; see README/`evals/BASELINE.md`). `--skip-vision`
 skips the local vision pre-pass + Ollama vision-LLM tail for a fast pass —
 drop it for the full run (see `evals/BASELINE.md` for measured latency:
 ~135s/image on a CPU-only machine).
