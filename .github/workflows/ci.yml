@@ -9,3 +9,27 @@ jobs:
       - run: uv sync --group dev
       - run: uv run ruff check src tests
       - run: uv run pytest -x -q
+
+  db:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: locket
+          POSTGRES_PASSWORD: locket
+          POSTGRES_DB: locket
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U locket -d locket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LOCKET_DB_URL: postgresql://locket:locket@localhost:5432/locket
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --group dev
+      - run: PGPASSWORD=locket psql -h localhost -U locket -d locket -f db/init.sql
+      - run: uv run pytest -m db

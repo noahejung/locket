@@ -1,0 +1,223 @@
+"""Store tests against the real dockerized Postgres+pgvector. Requires `docker compose up -d db`.
+
+Run explicitly: `uv run pytest -m db`. Excluded from the default `-x -q` sweep (Task 1's addopts).
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from locket.models import Fact, FactKind, RawItem, SourceKind
+from locket.store import Store
+
+pytestmark = pytest.mark.db
+
+DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@localhost:5432/locket")
+
+
+def _vec(seed: float, dims: int = 384) -> list[float]:
+    """A cheap deterministic unit-ish vector for test data — not a real embedding."""
+    v = [0.0] * dims
+    v[0] = seed
+    v[1] = 1.0
+    return v
+
+
+@pytest.fixture
+def store():
+    s = Store(DB_URL)
+    # Isolate each test — truncate everything, cascading through FKs-by-convention.
+    with s._conn.cursor() as cur:
+        cur.execute("TRUNCATE raw_items, facts, entities, fact_history RESTART IDENTITY CASCADE")
+    s._conn.commit()
+    yield s
+    s._conn.close()
+
+
+def _raw(i: int, text: str = "hello") -> RawItem:
+    return RawItem.make(
+        source=SourceKind.whatsapp,
+        ts=datetime(2025, 1, 1, tzinfo=UTC) + timedelta(minutes=i),
+        sender="John",
+        text=f"{text} {i}",
+        thread="t",
+    )
+
+
+def test_add_raw_items_idempotent(store):
+    items = [_raw(i) for i in range(3)]
+    n1 = store.add_raw_items(items)
+    assert n1 == 3
+    n2 = store.add_raw_items(items)  # re-ingest same batch
+    assert n2 == 0
+
+
+def test_add_fact_writes_history_and_dedupes(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(
+        kind=FactKind.event,
+        statement="John and Sarah had dinner in Boston",
+        confidence=0.9,
+        subjects=["John", "Sarah"],
+        place="Boston",
+        happened_at="2025-01-01",
+        provenance=[raw.id],
+    )
+    fact_id = store.add_fact(fact, embedding=_vec(1.0))
+    assert fact_id
+
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT event FROM fact_history WHERE fact_id = %s", (fact_id,))
+        events = [r[0] for r in cur.fetchall()]
+    assert events == ["ADD"]
+
+    # Identical statement -> dedup, same id returned, no second history row, no second fact row.
+    dup_id = store.add_fact(fact, embedding=_vec(1.0))
+    assert dup_id == fact_id
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM facts")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM fact_history WHERE fact_id = %s", (fact_id,))
+        assert cur.fetchone()[0] == 1
+
+
+def test_update_fact_writes_history_and_mutates(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(
+        kind=FactKind.habit,
+        statement="Sarah attends yoga on Tuesdays",
+        confidence=0.7,
+        subjects=["Sarah"],
+        provenance=[raw.id],
+    )
+    fact_id = store.add_fact(fact, embedding=_vec(2.0))
+
+    store.update_fact(fact_id, confidence=0.95)
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT confidence FROM facts WHERE id = %s", (fact_id,))
+        assert cur.fetchone()[0] == pytest.approx(0.95)
+        cur.execute(
+            "SELECT event FROM fact_history WHERE fact_id = %s ORDER BY id", (fact_id,)
+        )
+        events = [r[0] for r in cur.fetchall()]
+    assert events == ["ADD", "UPDATE"]
+
+    invalidated_at = datetime(2025, 6, 1, tzinfo=UTC)
+    store.update_fact(fact_id, invalid_at=invalidated_at)
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT invalid_at FROM facts WHERE id = %s", (fact_id,))
+        assert cur.fetchone()[0] == invalidated_at
+        cur.execute(
+            "SELECT event FROM fact_history WHERE fact_id = %s ORDER BY id", (fact_id,)
+        )
+        events = [r[0] for r in cur.fetchall()]
+    assert events == ["ADD", "UPDATE", "EXPIRE"]
+
+
+def test_search_facts_cosine_ranked_and_valid_at_filter(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    close = Fact(
+        kind=FactKind.preference,
+        statement="John prefers tea over coffee",
+        confidence=0.8,
+        provenance=[raw.id],
+    )
+    far = Fact(
+        kind=FactKind.preference,
+        statement="Sarah dislikes cilantro",
+        confidence=0.8,
+        provenance=[raw.id],
+    )
+    close_id = store.add_fact(close, embedding=_vec(1.0))
+    far_id = store.add_fact(far, embedding=_vec(-1.0))
+
+    results = store.search_facts(_vec(1.0), limit=10)
+    ids = [r.id for r in results]
+    assert ids.index(close_id) < ids.index(far_id)  # closer vector ranks first
+
+    # Expire `close`, then a query "as of" before the expiry should still surface it.
+    before = datetime(2025, 1, 1, tzinfo=UTC)
+    after_expiry_point = datetime(2025, 6, 1, tzinfo=UTC)
+    store.update_fact(close_id, invalid_at=datetime(2025, 3, 1, tzinfo=UTC))
+
+    still_valid = store.search_facts(_vec(1.0), limit=10, valid_at=before)
+    assert close_id in [r.id for r in still_valid]
+
+    now_expired = store.search_facts(_vec(1.0), limit=10, valid_at=after_expiry_point)
+    assert close_id not in [r.id for r in now_expired]
+
+
+def test_search_facts_kinds_filter(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    pref = Fact(kind=FactKind.preference, statement="John likes hiking", confidence=0.8, provenance=[raw.id])
+    habit = Fact(kind=FactKind.habit, statement="John runs every morning", confidence=0.8, provenance=[raw.id])
+    pref_id = store.add_fact(pref, embedding=_vec(1.0))
+    habit_id = store.add_fact(habit, embedding=_vec(1.0))
+
+    only_pref = store.search_facts(_vec(1.0), kinds=["preference"])
+    ids = [r.id for r in only_pref]
+    assert pref_id in ids
+    assert habit_id not in ids
+
+
+def test_fact_row_as_tool_dict():
+    from locket.store import FactRow
+
+    row = FactRow(
+        id="abc",
+        kind="event",
+        statement="stmt",
+        confidence=0.5,
+        entity_ids=["e1"],
+        provenance=["r1"],
+        happened_at="2025-01-01",
+        valid_at=None,
+        invalid_at=None,
+    )
+    d = row.as_tool_dict()
+    assert d["statement"] == "stmt"
+    assert d["kind"] == "event"
+    assert d["confidence"] == 0.5
+    assert d["happened_at"] == "2025-01-01"
+    assert d["sources"] == ["r1"]
+
+
+def test_upsert_entity_and_nearest_entities(store):
+    id1 = store.upsert_entity("Sarah Kovacs", "person", _vec(1.0))
+    id1_again = store.upsert_entity("Sarah Kovacs", "person", _vec(1.0))
+    assert id1 == id1_again  # same name+kind upserts to the same row
+
+    id2 = store.upsert_entity("Boston", "place", _vec(-1.0))
+    assert id2 != id1
+
+    nearest = store.nearest_entities(_vec(1.0), k=5)
+    ids = [e.id for e in nearest]
+    assert ids.index(id1) < ids.index(id2)
+    top = nearest[0]
+    assert top.id == id1
+    assert top.similarity == pytest.approx(1.0, abs=1e-6)
+
+
+def test_get_facts_for_entity(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    entity_id = store.upsert_entity("John", "person", _vec(1.0))
+    fact = Fact(
+        kind=FactKind.person,
+        statement="John works at Acme",
+        confidence=0.9,
+        entity_ids=[entity_id],
+        provenance=[raw.id],
+    )
+    fact_id = store.add_fact(fact, embedding=_vec(1.0))
+
+    rows = store.get_facts_for_entity(entity_id)
+    assert len(rows) == 1
+    assert rows[0].id == fact_id

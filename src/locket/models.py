@@ -18,6 +18,19 @@ class SourceKind(StrEnum):
     photo = "photo"
 
 
+class FactKind(StrEnum):
+    """Canonical fact-kind vocabulary. Defined here (not in extraction/schemas.py) so both
+    the extraction-time schema and the store-time Fact model share one enum without a
+    siblings-import — extraction/schemas.py imports this rather than redefining it."""
+
+    person = "person"
+    place = "place"
+    event = "event"
+    relationship = "relationship"
+    habit = "habit"
+    preference = "preference"
+
+
 class RawItem(BaseModel):
     id: str  # deterministic: sha256 of (source, native identity fields)[:16]
     source: SourceKind
@@ -71,3 +84,20 @@ class RawItem(BaseModel):
             is_system=is_system,
             meta=meta,
         )
+
+
+class Fact(BaseModel):
+    """The store-time fact shape: an ExtractedFact (extraction/schemas.py, Task 11) plus the
+    entity_ids and provenance that entity resolution / the extraction graph attach before
+    Store.add_fact persists it. Superset of ExtractedFact's fields by design so a later stage
+    can build one from the other with `Fact(**extracted.model_dump(), entity_ids=..., provenance=...)`.
+    """
+
+    kind: FactKind
+    statement: str
+    confidence: float = Field(ge=0, le=1)
+    subjects: list[str] = Field(default_factory=list)
+    place: str | None = None
+    happened_at: str | None = None  # ISO date or date range, own facts.happened_at column
+    entity_ids: list[str] = Field(default_factory=list)
+    provenance: list[str] = Field(default_factory=list)  # raw_items.id values
