@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -62,6 +62,22 @@ class EntityRow:
     name: str
     kind: str
     similarity: float  # 1 - cosine_distance
+    aliases: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MergeProposal:
+    """A tier-3-escalated entity-resolution verdict that didn't clear the auto-merge
+    confidence bar — sits in the confirm queue for a human y/n (Task 19's CLI) instead of
+    merging silently. See locket.resolution (Task 14)."""
+
+    id: str
+    mention: str
+    candidate_entity_id: str
+    candidate_entity_name: str
+    evidence: str
+    score: float
+    status: str = "pending"
 
 
 def _row_to_fact(row: tuple) -> FactRow:
@@ -274,7 +290,7 @@ class Store:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, name, kind, 1 - (embedding <=> %s) AS similarity
+                SELECT id, name, kind, aliases, 1 - (embedding <=> %s) AS similarity
                 FROM entities
                 ORDER BY embedding <=> %s
                 LIMIT %s
@@ -282,7 +298,78 @@ class Store:
                 (Vector(embedding), Vector(embedding), k),
             )
             rows = cur.fetchall()
-        return [EntityRow(id=str(r[0]), name=r[1], kind=r[2], similarity=r[3]) for r in rows]
+        return [
+            EntityRow(id=str(r[0]), name=r[1], kind=r[2], aliases=list(r[3] or []), similarity=r[4])
+            for r in rows
+        ]
+
+    def add_entity_alias(self, entity_id: str, alias: str) -> None:
+        """Append `alias` to an entity's aliases array, idempotently (no duplicate if the
+        alias is already present)."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE entities SET aliases = array_append(aliases, %s)
+                WHERE id = %s AND NOT (%s = ANY(aliases))
+                """,
+                (alias, entity_id, alias),
+            )
+        self._conn.commit()
+
+    def find_entity_by_alias(self, alias: str) -> str | None:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT id FROM entities WHERE %s = ANY(aliases) LIMIT 1", (alias,))
+            row = cur.fetchone()
+        return str(row[0]) if row is not None else None
+
+    # ---- merge_proposals (entity-resolution confirm queue, Task 14) -----------------
+
+    def add_merge_proposal(self, mention: str, candidate_entity_id: str, evidence: str, score: float) -> str:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO merge_proposals (mention, candidate_entity_id, evidence, score)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (mention, candidate_entity_id, evidence, score),
+            )
+            new_id = cur.fetchone()[0]
+        self._conn.commit()
+        return str(new_id)
+
+    def pending_merge_proposals(self) -> list[MergeProposal]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT mp.id, mp.mention, mp.candidate_entity_id, e.name, mp.evidence, mp.score, mp.status
+                FROM merge_proposals mp
+                JOIN entities e ON e.id = mp.candidate_entity_id
+                WHERE mp.status = 'pending'
+                ORDER BY mp.created_at
+                """
+            )
+            rows = cur.fetchall()
+        return [
+            MergeProposal(
+                id=str(r[0]),
+                mention=r[1],
+                candidate_entity_id=str(r[2]),
+                candidate_entity_name=r[3],
+                evidence=r[4],
+                score=r[5],
+                status=r[6],
+            )
+            for r in rows
+        ]
+
+    def resolve_merge_proposal(self, proposal_id: str, *, accept: bool) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE merge_proposals SET status = %s WHERE id = %s",
+                ("confirmed" if accept else "rejected", proposal_id),
+            )
+        self._conn.commit()
 
 
 def _jsonable(d: dict[str, Any]) -> dict[str, Any]:

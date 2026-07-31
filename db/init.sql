@@ -38,3 +38,18 @@ CREATE TABLE fact_history (
 CREATE INDEX ON facts USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON entities USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON raw_items (ts);
+
+-- Task 14: tiered entity resolution's confirm queue. Not listed in the plan's Task 14
+-- "Files" section (which names only resolution.py + its test), but resolution.py must not
+-- talk to Postgres directly — "store.py is the only module that talks to Postgres" is a
+-- hard boundary stated in PLAN.md's File Structure section — so persisting proposed merges
+-- for the CLI's y/n confirm queue (Task 19) belongs here, alongside the other tables.
+CREATE TABLE merge_proposals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  mention text NOT NULL,
+  candidate_entity_id uuid NOT NULL REFERENCES entities(id),
+  evidence text,
+  score real NOT NULL,
+  status text NOT NULL DEFAULT 'pending',            -- pending|confirmed|rejected
+  created_at timestamptz DEFAULT now()
+);
