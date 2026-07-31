@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --group dev
-      - run: uv run ruff check src tests
+      - run: uv run ruff check src tests evals corpusgen
       - run: uv run pytest -x -q
 
   db:

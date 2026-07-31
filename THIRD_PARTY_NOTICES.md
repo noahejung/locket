@@ -33,3 +33,8 @@ upstream licenses (mostly MIT/Apache 2.0/BSD). `pgvector` (PostgreSQL
 extension) is PostgreSQL-licensed. No GPL-licensed runtime dependency is used
 in this project — see the WhatsApp adapter decision note in the implementation
 plan for why `whatstk` (GPL-3.0) was rejected in favor of a hand-rolled parser.
+
+Verified directly against each package's installed metadata (2026-07-30):
+the `mcp` SDK (Model Context Protocol server, `mcp_server.py`) is MIT
+licensed; `langgraph`/`langchain-core`/`langchain-anthropic`/`anthropic` are
+MIT; `ragas` is Apache 2.0. No surprises against the blanket statement above.
