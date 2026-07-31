@@ -38,6 +38,9 @@ dependencies = [
   "faker==40.36.0",
   "piexif==1.1.3",
   "opencv-python-headless>=4.10",
+  "pyyaml>=6.0",  # evals/gold/*.yaml + questions.yaml (Tasks 15-16) -- was only a
+                  # transitive dep (via langchain/huggingface_hub) before; declared
+                  # explicitly since we now import it directly.
 ]
 
 [dependency-groups]

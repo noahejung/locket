@@ -1,0 +1,376 @@
+# Extraction eval gold set — synthetic persona corpus (Task 15).
+#
+# Every fact below traces to specific messages in corpusgen/conversations.json (0-based
+# list index, `thread | platform | speaker | ts | text` as printed by a plain enumerate —
+# see the "msg N" comment on each entry; ranges cite the first and last relevant index).
+# This is the CI regression set — ~60 facts the SCRIPTED corpus provably contains, distinct
+# from the ~100-200 REAL, self-labeled facts Task 19 Step 4b writes about Noah's own life
+# (evals/gold/real_gold.local.yaml, gitignored, never in this repo).
+#
+# Schema (locket.extraction.schemas.FactKind for `kind`; matched by evals/extraction_eval.py):
+#   kind: person | place | event | relationship | habit | preference
+#   statement: natural-language fact, standalone
+#   subjects: canonical persona names involved (corpusgen/personas.py PERSONAS)
+#   must_match: regexes (case-insensitive) that must ALL hit the extracted fact's
+#               statement for a candidate match — anchors the match beyond kind + cosine
+#               similarity so a merely-topically-similar fact can't count as a hit.
+
+- kind: event
+  statement: "Cory Davis's birthday falls on March 3rd, and the group planned a dinner at Bertucci's Trattoria to celebrate."
+  subjects: ["Cory Davis", "Kathryn Petrović", "Jeffrey Williams", "Joshua Vega"]
+  must_match: ["march 3", "bertucci"]
+  # msg 7, 15, 25, 209, 215
+
+- kind: habit
+  statement: "Cory Davis considers the carbonara at Bertucci's Trattoria the best in the city."
+  subjects: ["Cory Davis"]
+  must_match: ["carbonara", "bertucci"]
+  # msg 16, 223
+
+- kind: event
+  statement: "Joshua Vega got a job as a backend engineer at Northwind Robotics."
+  subjects: ["Joshua Vega"]
+  must_match: ["northwind", "backend"]
+  # msg 58
+
+- kind: event
+  statement: "Joshua Vega's start date at Northwind Robotics was May 5th."
+  subjects: ["Joshua Vega"]
+  must_match: ["may 5"]
+  # msg 65, 135
+
+- kind: event
+  statement: "Jeffrey Williams and Sarah Mendes planned a trip to Lisbon for June 9th through the 16th."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["lisbon", "june"]
+  # msg 41-52, 365
+
+- kind: relationship
+  statement: "Jeffrey Williams and Sarah Mendes had talked for months about a trip to Greece that never happened."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["greece"]
+  # msg 48-50
+
+- kind: habit
+  statement: "Sarah Mendes attends a 6:30am yoga class at Radiant Yoga on Tuesday and Thursday mornings."
+  subjects: ["Sarah Mendes"]
+  must_match: ["yoga", "radiant"]
+  # msg 69-77
+
+- kind: relationship
+  statement: "Jeffrey Williams and Sarah Mendes were college roommates during freshman year at Boston University."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["boston university", "roommate"]
+  # msg 111-113
+
+- kind: relationship
+  statement: "Jeffrey Williams and Sarah Mendes have been friends for eight years."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["eight years"]
+  # msg 119, 158
+
+- kind: preference
+  statement: "Kathryn Petrović primarily shoots film photography rather than digital."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["film"]
+  # msg 99
+
+- kind: person
+  statement: "Kathryn Petrović shoots with an old Contax film camera her father gave her before she moved away — the same camera he used in the 1980s."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["contax", "dad|father"]
+  # msg 125, 131
+
+- kind: event
+  statement: "Sarah Mendes and Jeffrey Williams planned their Lisbon itinerary around wandering Alfama on day one and a day trip to Sintra on day three."
+  subjects: ["Sarah Mendes", "Jeffrey Williams"]
+  must_match: ["alfama", "sintra"]
+  # msg 144-152
+
+- kind: event
+  statement: "Jeffrey Williams booked an Airbnb in Lisbon five minutes from the tram line."
+  subjects: ["Jeffrey Williams"]
+  must_match: ["airbnb", "tram"]
+  # msg 189
+
+- kind: preference
+  statement: "Jeffrey Williams wanted pastel de nata to be the top pastry stop on the Lisbon trip."
+  subjects: ["Jeffrey Williams"]
+  must_match: ["pastel de nata|pastry"]
+  # msg 190-193
+
+- kind: event
+  statement: "Kathryn Petrović asked Jeffrey Williams to bring her back a custard tart from Lisbon."
+  subjects: ["Kathryn Petrović", "Jeffrey Williams"]
+  must_match: ["custard tart"]
+  # msg 197, 367, 438
+
+- kind: event
+  statement: "Joshua Vega's car battery died on the way to Cory Davis's birthday dinner, making him nearly late."
+  subjects: ["Joshua Vega"]
+  must_match: ["battery"]
+  # msg 209-214
+
+- kind: event
+  statement: "Cory Davis turned 26 at his birthday dinner at Bertucci's Trattoria."
+  subjects: ["Cory Davis"]
+  must_match: ["26", "birthday"]
+  # msg 224-225
+
+- kind: relationship
+  statement: "Cory Davis has a dog named Biscuit, a beagle."
+  subjects: ["Cory Davis"]
+  must_match: ["biscuit", "beagle"]
+  # msg 35 ("beagles just do this")
+
+- kind: event
+  statement: "Biscuit the dog ate an entire sock and had to be taken to the emergency vet, which cost $340."
+  subjects: ["Cory Davis"]
+  must_match: ["sock", "vet"]
+  # msg 29-37
+
+- kind: relationship
+  statement: "Joshua Vega and Kathryn Petrović have been dating since early March, and told the friend group on March 17th."
+  subjects: ["Joshua Vega", "Kathryn Petrović"]
+  must_match: ["march", "dating|seeing each other|hanging out"]
+  # msg 235-261
+
+- kind: event
+  statement: "Kathryn Petrović got a solo show in the small room at Frame & Field gallery, on April 26th."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["frame & field|frame and field", "april 26"]
+  # msg 266-276
+
+- kind: person
+  statement: "Jeffrey Williams's birthday is October 12th."
+  subjects: ["Jeffrey Williams"]
+  must_match: ["october 12"]
+  # msg 288
+
+- kind: event
+  statement: "Kathryn Petrović's parents flew in from Zagreb on April 14th and stayed just under two weeks."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["zagreb", "april 14"]
+  # msg 297-311
+
+- kind: event
+  statement: "The group had dinner with Kathryn Petrović's visiting parents at a Greek restaurant on 9th street, at 7pm on April 17th."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["greek", "april 17|7pm"]
+  # msg 320-333
+
+- kind: event
+  statement: "Cory Davis hosted a movie night at his place with snacks on May 9th."
+  subjects: ["Cory Davis"]
+  must_match: ["movie night"]
+  # msg 373-390
+
+- kind: event
+  statement: "Joshua Vega finished his first week at Northwind Robotics and survived the deploy-pipeline onboarding."
+  subjects: ["Joshua Vega"]
+  must_match: ["first week", "northwind"]
+  # msg 392-396
+
+- kind: event
+  statement: "Jeffrey Williams and Sarah Mendes returned from Lisbon and brought back six custard tarts that survived the flight."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["custard tart", "six"]
+  # msg 449-452
+
+- kind: habit
+  statement: "Biscuit the dog barks at the mail carrier at exactly 2:15pm every day."
+  subjects: ["Cory Davis"]
+  must_match: ["mail carrier", "2:15"]
+  # msg 421
+
+- kind: habit
+  statement: "Joshua Vega has been drinking a lot of coffee to get through his deploy-pipeline onboarding at Northwind."
+  subjects: ["Joshua Vega"]
+  must_match: ["coffee"]
+  # msg 414
+
+- kind: event
+  statement: "Sarah Mendes's work manager pushed her deadline back by two weeks after she told Jeffrey Williams she was overwhelmed."
+  subjects: ["Sarah Mendes", "Jeffrey Williams"]
+  must_match: ["deadline", "two weeks"]
+  # msg 85-89, 174-176
+
+- kind: relationship
+  statement: "Kathryn Petrović's mother knitted a bandana for Cory Davis's dog Biscuit."
+  subjects: ["Kathryn Petrović", "Cory Davis"]
+  must_match: ["bandana", "biscuit"]
+  # msg 344-348
+
+- kind: place
+  statement: "Kathryn Petrović's parents live in Zagreb, and the flight to visit her takes about fourteen hours with a layover."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["zagreb", "fourteen|14 hour"]
+  # msg 298-301
+
+- kind: event
+  statement: "Kathryn Petrović's mother told a story about Zagreb in the 1990s at the family dinner that had the table in tears."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["zagreb", "90s|1990s"]
+  # msg 331
+
+- kind: event
+  statement: "Cory Davis renamed the 'team' WhatsApp group description to 'no bagels allowed', a tribute to the birthday from the year before when he was found eating a bagel alone."
+  subjects: ["Cory Davis"]
+  must_match: ["bagel"]
+  # msg 9-11, 283-284
+
+- kind: event
+  statement: "Kathryn Petrović created the 'team' WhatsApp group."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["created", "group"]
+  # msg 0
+
+- kind: event
+  statement: "Biscuit the dog fell asleep on Joshua Vega's lap during the movie night at Cory Davis's place."
+  subjects: ["Joshua Vega", "Cory Davis"]
+  must_match: ["biscuit", "movie|asleep"]
+  # msg 388-390
+
+- kind: event
+  statement: "Cory Davis reminded the group that Biscuit needed a vet checkup on Friday."
+  subjects: ["Cory Davis"]
+  must_match: ["vet", "checkup|friday"]
+  # msg 401-403
+
+- kind: event
+  statement: "The gallery show at Frame & Field drew a large crowd around 8pm."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["frame & field|frame and field", "crowd|8pm"]
+  # msg 364, 366
+
+- kind: event
+  statement: "Joshua Vega gave his old job two weeks' notice the Monday after announcing the Northwind offer."
+  subjects: ["Joshua Vega"]
+  must_match: ["two weeks", "monday"]
+  # msg 65
+
+- kind: event
+  statement: "Cory Davis said the group would celebrate Joshua Vega's new job properly once he actually started."
+  subjects: ["Cory Davis", "Joshua Vega"]
+  must_match: ["celebrat"]
+  # msg 66
+
+- kind: event
+  statement: "Joshua Vega's team lead at Northwind Robotics said the onboarding process is intense."
+  subjects: ["Joshua Vega"]
+  must_match: ["onboarding", "intense"]
+  # msg 140
+
+- kind: event
+  statement: "Sarah Mendes booked the train tickets to Sintra for the Lisbon trip."
+  subjects: ["Sarah Mendes"]
+  must_match: ["sintra", "train"]
+  # msg 152
+
+- kind: event
+  statement: "Sarah Mendes found an old photo from sophomore year of her and Jeffrey Williams in their dorm."
+  subjects: ["Sarah Mendes", "Jeffrey Williams"]
+  must_match: ["sophomore", "dorm"]
+  # msg 165-168
+
+- kind: habit
+  statement: "A substitute yoga instructor once had Sarah Mendes holding crow pose for a long time during her 5:30am class."
+  subjects: ["Sarah Mendes"]
+  must_match: ["crow pose"]
+  # msg 204
+
+- kind: event
+  statement: "Cory Davis sent the group a picture of the receipt from Bertucci's, showing how much they ate at the birthday dinner."
+  subjects: ["Cory Davis"]
+  must_match: ["receipt", "bertucci"]
+  # msg 227
+
+- kind: event
+  statement: "Biscuit the dog got a bite of the breadsticks at Bertucci's, according to Cory Davis."
+  subjects: ["Cory Davis"]
+  must_match: ["biscuit", "breadstick"]
+  # msg 230
+
+- kind: event
+  statement: "The small room at Frame & Field gallery does not take just anyone, which is why Kathryn Petrović's solo show is a big deal."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["frame & field|frame and field", "doesn't take|does not take|big deal"]
+  # msg 269
+
+- kind: event
+  statement: "Kathryn Petrović read the acceptance email from Frame & Field about thirty times to make sure it was real."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["thirty times|email"]
+  # msg 270
+
+- kind: relationship
+  statement: "Kathryn Petrović's mother loves Cory Davis's dog Biscuit and asks about him often."
+  subjects: ["Kathryn Petrović", "Cory Davis"]
+  must_match: ["biscuit", "mom|mother"]
+  # msg 322, 345
+
+- kind: event
+  statement: "The group agreed to do a dinner together while Kathryn Petrović's parents were visiting from Zagreb."
+  subjects: ["Kathryn Petrović"]
+  must_match: ["dinner", "parents"]
+  # msg 309-312
+
+- kind: event
+  statement: "Joshua Vega felt nervous about meeting Kathryn Petrović's parents at the family dinner."
+  subjects: ["Joshua Vega"]
+  must_match: ["nervous", "parents"]
+  # msg 324
+
+- kind: preference
+  statement: "Jeffrey Williams thought the Sintra palace looked like a movie set in person."
+  subjects: ["Jeffrey Williams"]
+  must_match: ["sintra", "movie set"]
+  # msg 456
+
+- kind: event
+  statement: "The Lisbon trip lasted about one week, and Jeffrey Williams and Sarah Mendes felt that wasn't enough after eight years of planning it."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["lisbon", "week"]
+  # msg 467
+
+- kind: relationship
+  statement: "Joshua Vega and Kathryn Petrović told the friend group they are happy together."
+  subjects: ["Joshua Vega", "Kathryn Petrović"]
+  must_match: ["happy"]
+  # msg 260-261
+
+- kind: event
+  statement: "Cory Davis claimed he called the Joshua-and-Kathryn relationship two weeks before they confirmed it."
+  subjects: ["Cory Davis"]
+  must_match: ["called it", "two weeks"]
+  # msg 257-258
+
+- kind: event
+  statement: "Joshua Vega texted the group ahead of time to say he and Kathryn Petrović were telling everyone that night, so nobody would be shocked."
+  subjects: ["Joshua Vega", "Kathryn Petrović"]
+  must_match: ["telling", "tonight"]
+  # msg 247-250
+
+- kind: preference
+  statement: "Sarah Mendes wants to visit every pastry shop in Lisbon during the trip."
+  subjects: ["Sarah Mendes"]
+  must_match: ["pastry"]
+  # msg 190
+
+- kind: event
+  statement: "Sarah Mendes said she slept eight hours for the first time in weeks after her work deadline was pushed back."
+  subjects: ["Sarah Mendes"]
+  must_match: ["eight hours", "sleep|slept"]
+  # msg 180-182
+
+- kind: event
+  statement: "Jeffrey Williams and Sarah Mendes packed for Lisbon on very different schedules — Sarah finished four days early, Jeffrey hadn't started with three days left."
+  subjects: ["Jeffrey Williams", "Sarah Mendes"]
+  must_match: ["packed|packing", "lisbon"]
+  # msg 426-430
+
+- kind: relationship
+  statement: "Cory Davis, Joshua Vega, Kathryn Petrović, and Jeffrey Williams are a close friend group who chat together in a WhatsApp group called 'team'."
+  subjects: ["Cory Davis", "Joshua Vega", "Kathryn Petrović", "Jeffrey Williams"]
+  must_match: ["team"]
+  # msg 0 and throughout the "team" thread
