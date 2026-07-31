@@ -35,6 +35,10 @@ dependencies = [
   "langchain-community==0.4.1",
   "anthropic==0.120.2",
   "ollama==0.6.2",
+  # Local-LLM backend (Task: keyless pipeline). Verified live 2026-07-31 against PyPI
+  # metadata: latest is 1.1.0, requires langchain-core<2.0.0,>=1.2.21 (repo pins 1.5.3,
+  # compatible) and ollama<1.0.0,>=0.6.1 (repo pins 0.6.2, compatible).
+  "langchain-ollama==1.1.0",
   "faker==40.36.0",
   "piexif==1.1.3",
   "opencv-python-headless>=4.10",

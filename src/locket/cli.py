@@ -28,6 +28,7 @@ from locket.adapters.whatsapp import parse_whatsapp
 from locket.config import Settings
 from locket.embeddings import get_backend
 from locket.extraction.graph import extract_batch
+from locket.llm import resolve_backend
 from locket.models import Fact, RawItem
 from locket.resolution import pending_confirmations, resolve
 from locket.store import Store
@@ -244,11 +245,16 @@ def _cmd_pipeline_run(
     resolve_model: Any | None,
     profile_model: Any | None,
 ) -> int:
-    if extraction_model is None and not settings.anthropic_api_key:
+    if (
+        extraction_model is None
+        and resolve_backend(settings) == "anthropic"
+        and not settings.anthropic_api_key
+    ):
         print(
-            "ANTHROPIC_API_KEY is not set -- extraction needs the Claude API and cannot run "
-            "without it. Set it in .env (see .env.example) and retry. (Vision pre-pass does "
-            "NOT need it; `locket ingest` alone works fine without a key.)",
+            "LOCKET_LLM_BACKEND=anthropic but ANTHROPIC_API_KEY is not set -- extraction "
+            "needs the Claude API and cannot run without it. Set it in .env (see "
+            ".env.example), or unset LOCKET_LLM_BACKEND to run fully local via Ollama "
+            "instead (default when no key is set).",
             file=sys.stderr,
         )
         return 1

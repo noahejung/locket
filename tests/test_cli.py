@@ -289,11 +289,38 @@ def test_pipeline_requires_a_subcommand():
         main(["pipeline"])
 
 
-def test_pipeline_run_without_key_and_without_stub_fails_clearly(store, tmp_path, monkeypatch, capsys):
+def test_pipeline_run_forces_anthropic_backend_without_key_fails_clearly(store, tmp_path, monkeypatch, capsys):
+    """The guard now only fires for an EXPLICITLY forced anthropic backend with no key --
+    since locket.llm defaults to the (keyless) ollama backend when no key is present, a
+    bare no-key run no longer refuses to proceed (see the next test)."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("LOCKET_LLM_BACKEND", "anthropic")
     corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
 
     exit_code = main(["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)], store=store)
 
+    err = capsys.readouterr().err
     assert exit_code == 1
-    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY" in err
+    assert "LOCKET_LLM_BACKEND" in err
+
+
+def test_pipeline_run_without_key_defaults_to_ollama_backend_and_proceeds(store, tmp_path, monkeypatch):
+    """Keyless default path (this task): no ANTHROPIC_API_KEY, no LOCKET_LLM_BACKEND
+    override -- locket.llm.resolve_backend picks "ollama", so the CLI's key guard does not
+    fire at all. Stubs extraction_model/profile_model to stay network-free here; the real
+    local-Ollama call path is covered live by
+    test_extraction_graph.py::test_live_local_backend_extracts_a_validated_result_from_one_window
+    (@pytest.mark.vision) and evals/BASELINE.md's local-backend pipeline run."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("LOCKET_LLM_BACKEND", raising=False)
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_AlwaysOneFactModel(),
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0

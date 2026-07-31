@@ -1,9 +1,14 @@
 """Unit tests run entirely against a hand-stubbed model — no network. One @pytest.mark.llm
-live smoke exercises the real Claude API and is skipped if ANTHROPIC_API_KEY is unset."""
+live smoke exercises the real Claude API and is skipped if ANTHROPIC_API_KEY is unset. One
+@pytest.mark.vision live smoke exercises the local Ollama backend (locket.llm) and is
+skipped if the local server/model isn't available -- same self-skip contract as
+test_vision_llm.py's describe_photo test, since both need a real local Ollama server."""
 
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -146,6 +151,49 @@ def test_live_smoke_extracts_at_least_one_plausible_fact():
     items = list(parse_whatsapp(demo, thread="team"))[:16]  # one window's worth
 
     results = extract_batch(items)
+
+    assert len(results) >= 1
+    for fact, provenance in results:
+        assert fact.kind in set(FactKind)
+        assert provenance
+        assert all(p in {i.id for i in items} for p in provenance)
+
+
+def _ollama_model_available(model: str) -> bool:
+    if shutil.which("ollama") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["ollama", "list"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and model.split(":")[0] in result.stdout
+
+
+@pytest.mark.vision
+def test_live_local_backend_extracts_a_validated_result_from_one_window():
+    """Same corpus window as the Anthropic live smoke above, but forced onto the local
+    Ollama backend via locket.llm -- the keyless path this task adds. Marked `vision`
+    (not `llm`) because it needs the local Ollama server/model, not ANTHROPIC_API_KEY."""
+    from locket.config import Settings
+    from locket.extraction.schemas import ExtractionResult
+    from locket.llm import DEFAULT_LOCAL_TEXT_MODEL, get_chat_model
+
+    if not _ollama_model_available(DEFAULT_LOCAL_TEXT_MODEL):
+        pytest.skip(f"ollama server/model {DEFAULT_LOCAL_TEXT_MODEL!r} not available — skipping live local smoke")
+
+    from locket.adapters.whatsapp import parse_whatsapp
+
+    demo = Path(__file__).parent.parent / "demo_corpus" / "whatsapp" / "team.txt"
+    items = list(parse_whatsapp(demo, thread="team"))[:16]  # one window's worth
+
+    settings = Settings(corpus_dir=None, db_url="postgresql://x/y", anthropic_api_key=None, ollama_model="qwen3-vl:8b")
+    model = get_chat_model("extraction_default", settings).with_structured_output(
+        ExtractionResult, method="json_schema", include_raw=True
+    )
+
+    results = extract_batch(items, model=model)
 
     assert len(results) >= 1
     for fact, provenance in results:

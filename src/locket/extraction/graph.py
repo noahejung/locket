@@ -15,16 +15,14 @@ import operator
 from functools import cache
 from typing import Annotated, Any, TypedDict
 
-from langchain_anthropic import ChatAnthropic
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy, Send
 
 from locket.extraction.chunking import windows
 from locket.extraction.schemas import ExtractedFact, ExtractionResult
+from locket.llm import get_default_chat_model
 from locket.models import RawItem
 
-HAIKU_MODEL_ID = "claude-haiku-4-5"
-SONNET_MODEL_ID = "claude-sonnet-5"
 MAX_ATTEMPTS = 3
 ESCALATE_AFTER = 2  # 0-indexed: this many haiku attempts have already failed
 
@@ -89,14 +87,14 @@ def _build_prompt(transcript: str, last_error: str | None) -> str:
 
 @cache
 def _default_model() -> Any:
-    return ChatAnthropic(model=HAIKU_MODEL_ID).with_structured_output(
+    return get_default_chat_model("extraction_default").with_structured_output(
         ExtractionResult, method="json_schema", include_raw=True
     )
 
 
 @cache
 def _escalation_model() -> Any:
-    return ChatAnthropic(model=SONNET_MODEL_ID).with_structured_output(
+    return get_default_chat_model("extraction_escalation").with_structured_output(
         ExtractionResult, method="json_schema", include_raw=True
     )
 

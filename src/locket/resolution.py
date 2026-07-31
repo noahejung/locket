@@ -35,15 +35,14 @@ import unicodedata
 from functools import cache
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 
 from locket.embeddings import get_backend
+from locket.llm import get_default_chat_model
 from locket.store import EntityRow, MergeProposal, Store
 
 SIMILARITY_FLOOR = 0.6
 LLM_CONFIRM_THRESHOLD = 0.85
-HAIKU_MODEL_ID = "claude-haiku-4-5"
 
 _EMOJI_RE = re.compile(
     "["
@@ -103,7 +102,7 @@ def _verdict_prompt(mention: str, candidate: EntityRow) -> str:
 
 @cache
 def _default_model() -> Any:
-    return ChatAnthropic(model=HAIKU_MODEL_ID).with_structured_output(MatchVerdict)
+    return get_default_chat_model("resolution").with_structured_output(MatchVerdict)
 
 
 def label_face_cluster(store: Store, cluster_id: int, entity_name: str, *, kind: str = "person") -> str:
@@ -183,7 +182,6 @@ def pending_confirmations(store: Store) -> list[MergeProposal]:
 
 
 __all__ = [
-    "HAIKU_MODEL_ID",
     "LLM_CONFIRM_THRESHOLD",
     "SIMILARITY_FLOOR",
     "MatchVerdict",

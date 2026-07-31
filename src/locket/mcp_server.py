@@ -36,15 +36,13 @@ import re
 from functools import cache
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
 from mcp.server import MCPServer
 from pydantic import BaseModel, Field
 
 from locket.embeddings import EmbeddingBackend, get_backend
+from locket.llm import get_default_chat_model
 from locket.resolution import SIMILARITY_FLOOR, resolve
 from locket.store import FactRow, Store
-
-HAIKU_MODEL_ID = "claude-haiku-4-5"
 
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
@@ -90,12 +88,12 @@ def _extract_section(body: str, section: str) -> str | None:
 
 @cache
 def _default_decompose_model() -> Any:
-    return ChatAnthropic(model=HAIKU_MODEL_ID).with_structured_output(SubQueries)
+    return get_default_chat_model("mcp_decompose").with_structured_output(SubQueries)
 
 
 @cache
 def _default_synthesize_model() -> Any:
-    return ChatAnthropic(model=HAIKU_MODEL_ID)
+    return get_default_chat_model("mcp_synthesize")
 
 
 def _decompose(question: str, *, model: Any | None) -> list[str]:

@@ -21,13 +21,11 @@ from __future__ import annotations
 from functools import cache
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 
+from locket.llm import get_default_chat_model
 from locket.models import FactKind
 from locket.store import FactRow, Store
-
-HAIKU_MODEL_ID = "claude-haiku-4-5"
 
 SECTION_ORDER = ["Identity", "People", "Timeline", "Habits", "Preferences"]
 
@@ -62,7 +60,7 @@ def _build_section_prompt(name: str, facts: list[FactRow]) -> str:
 
 @cache
 def _default_render_model() -> Any:
-    return ChatAnthropic(model=HAIKU_MODEL_ID).with_structured_output(SectionRendering)
+    return get_default_chat_model("profile_render").with_structured_output(SectionRendering)
 
 
 def _render_sentences(name: str, facts: list[FactRow], *, model: Any | None) -> list[str]:
