@@ -23,6 +23,16 @@ dependencies = [
   "lxml==6.1.1",
   "ftfy==6.3.1",
   "ragas==0.4.3",
+  # ragas 0.4.3's `import ragas` chain unconditionally imports
+  # langchain_community.chat_models.vertexai (ragas/llms/base.py), even though the
+  # modern ragas.metrics.collections API (Task 16) never touches LangChain-wrapped
+  # LLMs at runtime. langchain-community is unpinned in ragas's own metadata; 0.4.2
+  # (latest at build time) dropped chat_models/vertexai.py entirely as part of its
+  # "sunset" integration cleanup, breaking the import with
+  # ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'.
+  # Pinned to the last confirmed-working release (verified 2026-07-30 by inspecting
+  # the wheel's file list directly) rather than left to float.
+  "langchain-community==0.4.1",
   "anthropic==0.120.2",
   "ollama==0.6.2",
   "faker==40.36.0",
