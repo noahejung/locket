@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from PIL import ExifTags, Image
@@ -55,7 +55,18 @@ def _dms_to_decimal(dms, ref: str | None) -> float | None:
     return val
 
 
-def _from_exif(path: Path) -> tuple[datetime | None, float | None, float | None]:
+def _local_tz() -> tzinfo:
+    """The system's local timezone, resolved at call time (not import time -- the UTC
+    offset can vary by date under DST, so freezing it once at import would be wrong for
+    some fraction of any real library)."""
+    return datetime.now().astimezone().tzinfo
+
+
+def _from_exif(path: Path, tz: tzinfo) -> tuple[datetime | None, float | None, float | None]:
+    """EXIF DateTimeOriginal is the camera's LOCAL wall-clock reading at capture time --
+    baseline EXIF carries no offset (the optional OffsetTimeOriginal tag isn't read here),
+    so it's never UTC. Tagging it UTC directly (the pre-fix behavior) silently shifted every
+    derived timestamp by the true UTC offset."""
     with Image.open(path) as img:
         exif = img.getexif()
         if not exif:
@@ -65,7 +76,8 @@ def _from_exif(path: Path) -> tuple[datetime | None, float | None, float | None]
         ts = None
         if dt_str:
             try:
-                ts = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S").replace(tzinfo=UTC)
+                local = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S").replace(tzinfo=tz)
+                ts = local.astimezone(UTC)
             except ValueError:
                 ts = None
         gps_ifd = exif.get_ifd(ExifTags.IFD.GPSInfo)
@@ -89,7 +101,12 @@ def _from_sidecar(sidecar: Path) -> tuple[datetime | None, float | None, float |
     return ts, lat, lon
 
 
-def parse_photos(root: Path) -> Iterator[RawItem]:
+def parse_photos(root: Path, source_tz: tzinfo | None = None) -> Iterator[RawItem]:
+    """`source_tz` is the timezone EXIF DateTimeOriginal timestamps were written in --
+    defaults to the system's local timezone (`_local_tz()`) since that's the capturing
+    device's own clock in the overwhelmingly common case. Sidecar (Google Takeout)
+    timestamps are unaffected -- they're already epoch/UTC, not wall-clock text."""
+    tz = source_tz if source_tz is not None else _local_tz()
     seen_hashes: set[str] = set()
     # Shallower paths win dedup ties — Takeout nests album *copies* one level
     # deeper (e.g. "Photos from 2025/x.jpg" vs "Album/x.jpg"), so the
@@ -116,7 +133,7 @@ def parse_photos(root: Path) -> Iterator[RawItem]:
                 taken_source = "sidecar"
 
         if ts is None:
-            exif_ts, exif_lat, exif_lon = _from_exif(path)
+            exif_ts, exif_lat, exif_lon = _from_exif(path, tz)
             if exif_ts is not None:
                 ts = exif_ts
                 taken_source = "exif"

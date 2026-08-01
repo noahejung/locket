@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from locket.adapters.whatsapp import parse_whatsapp
@@ -32,3 +33,32 @@ def test_ios_brackets_lrm_and_attachment():
 def test_all_items_are_whatsapp_kind():
     items = list(parse_whatsapp(FIX / "whatsapp_android.txt", thread="team"))
     assert all(i.source == SourceKind.whatsapp for i in items)
+
+
+# ---------------------------------------------------------------------------
+# source_tz -- WhatsApp header timestamps are LOCAL wall-clock, not UTC
+# (fix-wave-1 item 4). A fixed, non-UTC offset -- never the machine's own tz --
+# so these don't depend on where they run.
+# ---------------------------------------------------------------------------
+
+_EST = timezone(timedelta(hours=-5))
+
+
+def test_explicit_source_tz_converts_local_wall_clock_to_utc():
+    # "1/15/25, 10:32 AM" in the fixture is a local wall-clock reading. Interpreted as
+    # EST (UTC-5), it must convert to 15:32 UTC -- not be tagged UTC verbatim (the bug).
+    items = list(parse_whatsapp(FIX / "whatsapp_android.txt", thread="team", source_tz=_EST))
+    assert items[0].ts == datetime(2025, 1, 15, 15, 32, tzinfo=UTC)
+
+
+def test_no_source_tz_given_defaults_to_the_resolved_local_timezone(monkeypatch):
+    # Don't depend on the machine's real tz -- monkeypatch the module's own local-tz
+    # resolution to a fixed, known-non-UTC offset and prove the default path picks it up.
+    monkeypatch.setattr("locket.adapters.whatsapp._local_tz", lambda: _EST)
+    items = list(parse_whatsapp(FIX / "whatsapp_android.txt", thread="team"))
+    assert items[0].ts == datetime(2025, 1, 15, 15, 32, tzinfo=UTC)
+
+
+def test_source_tz_utc_is_a_no_op():
+    items = list(parse_whatsapp(FIX / "whatsapp_android.txt", thread="team", source_tz=UTC))
+    assert items[0].ts == datetime(2025, 1, 15, 10, 32, tzinfo=UTC)

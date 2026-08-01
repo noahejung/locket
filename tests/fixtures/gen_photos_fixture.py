@@ -30,7 +30,12 @@ def _plain_jpeg(path: pathlib.Path, color: str) -> None:
 def _exif_jpeg(path: pathlib.Path, color: str) -> None:
     exif_dict = {
         "0th": {},
-        "Exif": {piexif.ExifIFD.DateTimeOriginal: b"2025:01:15 10:30:00"},
+        # 23:30 local, deliberately near midnight -- EXIF DateTimeOriginal is local
+        # wall-clock, not UTC (fix-wave-1 item 4). A time this close to a date boundary
+        # means a naive "tag it UTC" bug and a real timezone conversion don't just disagree
+        # on the hour, they disagree on the CALENDAR DATE -- the fixture can no longer
+        # accidentally agree with a buggy implementation the way a mid-day time could.
+        "Exif": {piexif.ExifIFD.DateTimeOriginal: b"2025:01:15 23:30:00"},
         "GPS": {
             piexif.GPSIFD.GPSLatitudeRef: b"N",
             piexif.GPSIFD.GPSLatitude: ((37, 1), (46, 1), (1, 2)),

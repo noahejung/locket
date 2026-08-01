@@ -57,7 +57,16 @@ def test_personas_have_five_distinct_canonical_names():
 
 def _check_whatsapp_thread(filename: str, thread: str):
     canonical = _canonical(thread)
-    items = list(parse_whatsapp(DEMO / "whatsapp" / filename, thread=thread))
+    # source_tz=UTC pinned: corpusgen renders WhatsApp header text straight from each
+    # canonical message's UTC timestamp (no timezone reasoning at generation time -- see
+    # corpusgen/renderers.py), so by construction the rendered wall-clock numbers ARE the
+    # canonical UTC numbers. This round-trip test is about content/format survival, not
+    # timezone-conversion correctness (locket.adapters.whatsapp's own tests cover that) --
+    # without pinning UTC here, parse_whatsapp's real fix (fix-wave-1 item 4: interpret
+    # header timestamps via the system's local timezone by default) would shift every
+    # parsed ts by this machine's UTC offset and break the ts-survival assertions below for
+    # a reason unrelated to what this test is actually checking.
+    items = list(parse_whatsapp(DEMO / "whatsapp" / filename, thread=thread, source_tz=UTC))
 
     assert len(items) == len(canonical)
     assert sum(1 for i in items if i.is_system) == sum(1 for m in canonical if m.get("system"))

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from locket.adapters.base import register
@@ -34,24 +34,36 @@ _ATTACH = re.compile(
 )
 
 
-def _ts(g: dict) -> datetime:
+def _local_tz() -> tzinfo:
+    """The system's local timezone, resolved at call time (not import time -- the UTC
+    offset can vary by date under DST, so freezing it once at import would be wrong for
+    some fraction of any real export)."""
+    return datetime.now().astimezone().tzinfo
+
+
+def _ts(g: dict, tz: tzinfo) -> datetime:
+    """WhatsApp's exported header timestamp is the phone's LOCAL wall-clock reading at
+    send time, never UTC -- tagging it UTC directly (the pre-fix behavior) silently shifted
+    every derived timestamp by the true UTC offset. Build the naive local reading first,
+    attach `tz`, then convert."""
     y = int(g["y"])
     y += 2000 if y < 100 else 0
     h = int(g["h"])
     if g.get("ampm"):
         ap = g["ampm"].lower()
         h = (h % 12) + (12 if ap == "pm" else 0)
-    return datetime(y, int(g["m"]), int(g["d"]), h, int(g["min"]), int(g.get("s") or 0), tzinfo=UTC)
+    local = datetime(y, int(g["m"]), int(g["d"]), h, int(g["min"]), int(g.get("s") or 0), tzinfo=tz)
+    return local.astimezone(UTC)
 
 
-def _match_header(line: str) -> tuple[datetime, str] | None:
+def _match_header(line: str, tz: tzinfo) -> tuple[datetime, str] | None:
     """Return (ts, remainder-after-header) if `line` starts a new message, else None."""
     m = _BRACKET.match(line)
     if m:
-        return _ts(m.groupdict()), line[m.end() :]
+        return _ts(m.groupdict(), tz), line[m.end() :]
     m = _DASH.match(line)
     if m:
-        return _ts(m.groupdict()), line[m.end() :]
+        return _ts(m.groupdict(), tz), line[m.end() :]
     return None
 
 
@@ -86,7 +98,14 @@ def _split_pending(pending: dict) -> RawItem:
     )
 
 
-def parse_whatsapp(path: Path, thread: str | None = None) -> Iterator[RawItem]:
+def parse_whatsapp(
+    path: Path, thread: str | None = None, source_tz: tzinfo | None = None
+) -> Iterator[RawItem]:
+    """`source_tz` is the timezone the export's header timestamps were written in --
+    defaults to the system's local timezone (`_local_tz()`) since that's the export
+    device's own clock in the overwhelmingly common case. Pass it explicitly when ingesting
+    an export known to be from a different timezone than the machine running locket."""
+    tz = source_tz if source_tz is not None else _local_tz()
     pending: dict | None = None
     with open(path, encoding="utf-8") as fh:
         for raw_line in fh:
@@ -94,7 +113,7 @@ def parse_whatsapp(path: Path, thread: str | None = None) -> Iterator[RawItem]:
             line = _LRM.sub("", line)
             if not line:
                 continue
-            header = _match_header(line)
+            header = _match_header(line, tz)
             if header is not None:
                 if pending is not None:
                     yield _split_pending(pending)

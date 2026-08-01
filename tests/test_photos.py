@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from locket.adapters.photos import find_sidecar, parse_photos
@@ -51,14 +51,36 @@ def test_zero_geodata_yields_no_coordinate():
     assert d.meta["lon"] is None
 
 
+_EST = timezone(timedelta(hours=-5))
+
+
 def test_exif_only_photo_gets_ts_and_decimal_gps():
-    items = list(parse_photos(FIX))
+    # Fixture's EXIF DateTimeOriginal is "2025:01:15 23:30:00" local wall-clock -- passed
+    # as EST (UTC-5) explicitly (never the machine's real tz), it converts to 04:30 UTC on
+    # the FOLLOWING day. A pre-fix "tag it UTC directly" bug would instead yield
+    # 2025-01-15 23:30 UTC -- wrong hour AND wrong date, so this can't accidentally pass.
+    items = list(parse_photos(FIX, source_tz=_EST))
     a = _by_stem(items, "IMG_a")
     assert a.meta["taken_source"] == "exif"
-    assert a.ts == datetime(2025, 1, 15, 10, 30, 0, tzinfo=UTC)
+    assert a.ts == datetime(2025, 1, 16, 4, 30, 0, tzinfo=UTC)
     assert a.meta["lat"] is not None and a.meta["lon"] is not None
     assert 37 < a.meta["lat"] < 38
     assert -123 < a.meta["lon"] < -122
+
+
+def test_no_source_tz_given_defaults_to_the_resolved_local_timezone(monkeypatch):
+    # Don't depend on the machine's real tz -- monkeypatch the module's own local-tz
+    # resolution to a fixed, known-non-UTC offset and prove the default path picks it up.
+    monkeypatch.setattr("locket.adapters.photos._local_tz", lambda: _EST)
+    items = list(parse_photos(FIX))
+    a = _by_stem(items, "IMG_a")
+    assert a.ts == datetime(2025, 1, 16, 4, 30, 0, tzinfo=UTC)
+
+
+def test_source_tz_utc_is_a_no_op():
+    items = list(parse_photos(FIX, source_tz=UTC))
+    a = _by_stem(items, "IMG_a")
+    assert a.ts == datetime(2025, 1, 15, 23, 30, 0, tzinfo=UTC)
 
 
 def test_duplicate_content_dedupes_to_one_raw_item():
