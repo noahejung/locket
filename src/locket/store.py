@@ -616,9 +616,22 @@ class Store:
         "one query for the per-kind breakdown AND the grand total"): `GROUP BY ROLLUP
         (kind)` returns one row per kind plus one extra row with kind=NULL carrying the
         count/avg over every fact regardless of kind, in the SAME round-trip a plain `GROUP
-        BY kind` would already need -- no second query for the totals. Returns
-        total=0/mean_confidence=0.0/by_kind={} on an empty facts table (ROLLUP over zero
-        rows yields zero result rows, same as a plain GROUP BY would)."""
+        BY kind` would already need -- no second query for the totals.
+
+        Regression (found live 2026-08-01 by the real `-m db` suite, after a session where
+        Docker Desktop was unavailable and this path was verified only by hand-tracing --
+        the hand-trace was WRONG): on an EMPTY facts table, ROLLUP still emits exactly ONE
+        row, `(kind=NULL, count=0, avg=NULL)` -- confirmed live against Postgres directly
+        (`GROUP BY ROLLUP (kind)` on a truncated table returns `[(None, 0, None)]`, not `[]`).
+        The grand-total grouping set (all columns NULL) behaves like an ungrouped aggregate,
+        which Postgres always evaluates exactly once even over zero rows -- it is NOT like a
+        plain `GROUP BY kind`, which really does return zero rows for an empty table. The
+        original docstring claim here ("ROLLUP over zero rows yields zero result rows, same
+        as a plain GROUP BY would") was simply false, and `float(avg_confidence)` on that
+        row crashed with `TypeError: float() argument must be ... not 'NoneType'` for every
+        empty-table caller -- including `_cmd_pipeline_run`'s `facts_before` snapshot, which
+        made EVERY `pipeline run` against a fresh corpus fail, not just `locket stats` on an
+        empty store."""
         with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute("SELECT kind, count(*), avg(confidence) FROM facts GROUP BY ROLLUP (kind)")
             rows = cur.fetchall()
@@ -626,10 +639,14 @@ class Store:
         total = 0
         mean_confidence = 0.0
         for kind, count, avg_confidence in rows:
-            if kind is None:  # the ROLLUP grand-total row -- always present when `rows` is non-empty
+            if kind is None:  # the ROLLUP grand-total row -- always present, even for an
+                # empty table, per the live-confirmed behavior above; avg_confidence is
+                # NULL/None specifically in that empty-table case (avg() over zero rows).
                 total = count
-                mean_confidence = float(avg_confidence)
+                mean_confidence = float(avg_confidence) if avg_confidence is not None else 0.0
             else:
+                # A per-kind row only exists here if at least one fact of that kind is
+                # present, so avg_confidence for THIS branch is never NULL -- no guard needed.
                 by_kind[kind] = KindFactStats(count=count, mean_confidence=float(avg_confidence))
         return FactStats(total=total, mean_confidence=mean_confidence, by_kind=by_kind)
 

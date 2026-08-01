@@ -569,8 +569,14 @@ def test_fact_stats_totals_and_per_kind_breakdown_in_one_query(store):
 
 
 def test_fact_stats_empty_facts_table(store):
-    """ROLLUP over zero rows yields zero result rows (same as a plain GROUP BY would) --
-    fact_stats must still return sane zero-valued defaults, not raise or return garbage."""
+    """Regression: `GROUP BY ROLLUP (kind)` on an empty table still emits ONE row --
+    `(kind=NULL, count=0, avg=NULL)` -- the grand-total grouping set behaves like an
+    ungrouped aggregate (always evaluated once), unlike a plain `GROUP BY kind`, which
+    really does return zero rows for an empty table. fact_stats must handle that NULL
+    avg_confidence on the grand-total row and still return sane zero-valued defaults, not
+    raise `TypeError: float() argument must be ... not 'NoneType'` (confirmed live against
+    Postgres directly before this fix, and the actual failure this test caught once `-m db`
+    finally ran for real)."""
     stats = store.fact_stats()
 
     assert stats.total == 0
