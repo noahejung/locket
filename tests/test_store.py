@@ -32,8 +32,8 @@ def store():
     # Isolate each test — truncate everything, cascading through FKs-by-convention.
     with s._conn.cursor() as cur:
         cur.execute(
-            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles "
-            "RESTART IDENTITY CASCADE"
+            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles, "
+            "extracted_windows RESTART IDENTITY CASCADE"
         )
     s._conn.commit()
     yield s
@@ -273,6 +273,25 @@ def test_list_facts_filters_by_kind_and_orders_by_created_at(store):
 
     only_habit = store.list_facts(kinds=["habit"])
     assert [r.id for r in only_habit] == [habit_id]
+
+
+def test_extracted_window_hashes_round_trip(store):
+    assert store.get_extracted_window_hashes(["h1", "h2"]) == set()
+
+    store.mark_windows_extracted(["h1", "h2"])
+    assert store.get_extracted_window_hashes(["h1", "h2", "h3"]) == {"h1", "h2"}
+
+    # Marking an already-marked hash again is a no-op, not a duplicate-key error.
+    store.mark_windows_extracted(["h1"])
+    assert store.get_extracted_window_hashes(["h1"]) == {"h1"}
+
+
+def test_extracted_window_hashes_empty_input_short_circuits(store):
+    assert store.get_extracted_window_hashes([]) == set()
+    store.mark_windows_extracted([])  # must not raise
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM extracted_windows")
+        assert cur.fetchone()[0] == 0
 
 
 def test_list_entities_and_get_entity(store):

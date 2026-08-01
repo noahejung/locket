@@ -299,6 +299,31 @@ class Store:
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
 
+    # ---- extracted_windows (pipeline-run idempotency watermark, fix-wave-1 item 8b) ---
+
+    def get_extracted_window_hashes(self, hashes: list[str]) -> set[str]:
+        """Which of `hashes` are already recorded as extracted -- lets the pipeline skip
+        windows a prior `pipeline run` already spent model calls on. Empty input returns an
+        empty set without a round-trip."""
+        if not hashes:
+            return set()
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("SELECT window_hash FROM extracted_windows WHERE window_hash = ANY(%s)", (hashes,))
+            rows = cur.fetchall()
+        return {r[0] for r in rows}
+
+    def mark_windows_extracted(self, hashes: list[str]) -> None:
+        """Record `hashes` as extracted. ON CONFLICT DO NOTHING -- window_hash is the primary
+        key, and a window can be marked at most once."""
+        if not hashes:
+            return
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            for h in hashes:
+                cur.execute(
+                    "INSERT INTO extracted_windows (window_hash) VALUES (%s) ON CONFLICT (window_hash) DO NOTHING",
+                    (h,),
+                )
+
     # ---- entities -------------------------------------------------------------------
 
     def upsert_entity(self, name: str, kind: str, embedding: list[float]) -> str:

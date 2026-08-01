@@ -31,8 +31,8 @@ def store():
     s = Store(DB_URL)
     with s._conn.cursor() as cur:
         cur.execute(
-            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles "
-            "RESTART IDENTITY CASCADE"
+            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles, "
+            "extracted_windows RESTART IDENTITY CASCADE"
         )
     s._conn.commit()
     yield s

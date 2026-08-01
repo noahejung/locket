@@ -27,7 +27,8 @@ from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
 from locket.config import Settings
 from locket.embeddings import get_backend
-from locket.extraction.graph import extract_batch
+from locket.extraction.chunking import windows
+from locket.extraction.graph import extract_batch, window_hash
 from locket.llm import resolve_backend
 from locket.models import Fact, RawItem
 from locket.resolution import pending_confirmations, resolve
@@ -189,6 +190,7 @@ def _run_pipeline(
 
     raw_inserted = 0
     facts_created = 0
+    windows_skipped = 0
     fact_subjects: list[tuple[str, list[str]]] = []
     mentions: set[str] = set()
 
@@ -200,7 +202,20 @@ def _run_pipeline(
 
         raw_inserted += store.add_raw_items(items)
 
-        for extracted_fact, provenance in extract_batch(items, model=extraction_model):
+        # Idempotency watermark (fix-wave-1 item 8b): skip windows a prior `pipeline run`
+        # already extracted -- computed here (not inside extract_batch) so window
+        # boundaries stay stable across runs; re-deriving windows() from a pruned item list
+        # could reshuffle them (gap/order-sensitive).
+        item_windows = windows(items)
+        hashes = [window_hash(w) for w in item_windows]
+        already_done = store.get_extracted_window_hashes(hashes) if hashes else set()
+        pending_windows = [w for w, h in zip(item_windows, hashes, strict=True) if h not in already_done]
+        pending_hashes = [h for h in hashes if h not in already_done]
+        windows_skipped += len(hashes) - len(pending_hashes)
+
+        for extracted_fact, provenance in extract_batch(
+            items, model=extraction_model, windows_override=pending_windows
+        ):
             fact = Fact(
                 kind=extracted_fact.kind,
                 statement=extracted_fact.statement,
@@ -216,6 +231,9 @@ def _run_pipeline(
             fact_subjects.append((fact_id, fact.subjects))
             mentions.update(fact.subjects)
 
+        if pending_hashes:
+            store.mark_windows_extracted(pending_hashes)
+
     if mentions:
         resolved = resolve(store, sorted(mentions), model=resolve_model)
         for fact_id, subjects in fact_subjects:
@@ -230,6 +248,7 @@ def _run_pipeline(
         "raw_items_inserted": raw_inserted,
         "facts_created": facts_created,
         "mentions_seen": len(mentions),
+        "windows_skipped": windows_skipped,
         "warnings": warnings,
     }
 

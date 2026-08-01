@@ -36,8 +36,8 @@ def store():
     s = Store(DB_URL)
     with s._conn.cursor() as cur:
         cur.execute(
-            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles "
-            "RESTART IDENTITY CASCADE"
+            "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, profiles, "
+            "extracted_windows RESTART IDENTITY CASCADE"
         )
     s._conn.commit()
     yield s
@@ -176,6 +176,42 @@ def test_pipeline_run_skip_vision_with_stubbed_llm_populates_facts(store, tmp_pa
         assert cur.fetchone()[0] >= 1  # "Noah" subject resolved/created
         cur.execute("SELECT count(*) FROM profiles")
         assert cur.fetchone()[0] == 1  # synthesize() ran at the end
+
+
+def test_pipeline_run_second_invocation_skips_already_extracted_windows(store, tmp_path):
+    """Fix-wave-1 item 8b: `pipeline run` re-extracted every window on every call, even
+    unchanged ones -- a real re-bill risk against a real corpus + a real API key. A second
+    run over the SAME corpus must make zero NEW model calls (proving the skip happens
+    BEFORE the model is invoked, not just that duplicate facts get deduped after the fact)
+    and create zero new facts."""
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+    extraction_model = _AlwaysOneFactModel()
+
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=extraction_model,
+        profile_model=_EchoProfileModel(),
+    )
+    calls_after_first_run = len(extraction_model.calls)
+    assert calls_after_first_run >= 1
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM facts")
+        facts_after_first_run = cur.fetchone()[0]
+
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=extraction_model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert len(extraction_model.calls) == calls_after_first_run  # zero new model calls
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM facts")
+        assert cur.fetchone()[0] == facts_after_first_run  # zero new facts
+        cur.execute("SELECT count(*) FROM extracted_windows")
+        assert cur.fetchone()[0] >= 1
 
 
 def test_pipeline_run_prints_json_summary(store, tmp_path, capsys):

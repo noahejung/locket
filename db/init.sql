@@ -66,3 +66,15 @@ CREATE TABLE profiles (
   fact_count integer NOT NULL,
   created_at timestamptz DEFAULT now()
 );
+
+-- Fix-wave-1 item 8b: pipeline-run idempotency watermark. A window (a specific
+-- chronological slice of raw_items, identified by extraction.graph.window_hash) that has
+-- already been sent through extraction -- successfully or given-up-on, either way the
+-- pipeline already spent up to MAX_ATTEMPTS model calls reaching a terminal state for it --
+-- is recorded here so a second `pipeline run` over the same corpus doesn't re-call the
+-- model (and re-bill) for it. Same "store.py is the only module that talks to Postgres"
+-- rationale as merge_proposals/profiles above.
+CREATE TABLE extracted_windows (
+  window_hash text PRIMARY KEY,
+  created_at timestamptz DEFAULT now()
+);

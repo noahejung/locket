@@ -11,6 +11,7 @@ retry transient API errors, which its defaults DO cover.
 
 from __future__ import annotations
 
+import hashlib
 import operator
 from functools import cache
 from typing import Annotated, Any, TypedDict
@@ -183,11 +184,29 @@ def _build_batch_graph(model: Any | None):
     return graph.compile()
 
 
-def run_batch(items: list[RawItem], *, model: Any | None = None) -> list[dict]:
+def window_hash(window: list[RawItem]) -> str:
+    """Deterministic identity for one window -- sha256 of its ordered provenance (raw_item)
+    ids. Used by cli.py's `_run_pipeline` as the extracted-windows idempotency watermark
+    key (Store.get_extracted_window_hashes/mark_windows_extracted) so a second `pipeline
+    run` over the same corpus skips windows it already spent model calls on. Order matters:
+    a window is a specific chronological slice through a conversation, not an unordered set
+    of messages, so the same items in a different order are NOT the same window."""
+    return hashlib.sha256("|".join(item.id for item in window).encode()).hexdigest()
+
+
+def run_batch(
+    items: list[RawItem], *, model: Any | None = None, windows_override: list[list[RawItem]] | None = None
+) -> list[dict]:
     """Lower-level than extract_batch: returns the raw per-window result dicts, including
     give-up windows (facts=None, a "notes" marker set, no exception raised). extract_batch
-    is a thin flattening wrapper over this for the plan's exact public contract."""
-    item_windows = windows(items)
+    is a thin flattening wrapper over this for the plan's exact public contract.
+
+    `windows_override`, if given, is used verbatim instead of computing `windows(items)` --
+    lets a caller (cli.py's `_run_pipeline`) pass an already-filtered subset (e.g. excluding
+    windows a prior run already extracted) without re-deriving window boundaries from a
+    pruned item list, which could reshuffle them (windows() is gap/order-sensitive, so
+    removing items changes adjacency). `items` is unused in that case."""
+    item_windows = windows_override if windows_override is not None else windows(items)
     if not item_windows:
         return []
     compiled = _build_batch_graph(model)
@@ -200,10 +219,10 @@ def run_batch(items: list[RawItem], *, model: Any | None = None) -> list[dict]:
 
 
 def extract_batch(
-    items: list[RawItem], *, model: Any | None = None
+    items: list[RawItem], *, model: Any | None = None, windows_override: list[list[RawItem]] | None = None
 ) -> list[tuple[ExtractedFact, list[str]]]:
     out: list[tuple[ExtractedFact, list[str]]] = []
-    for window_result in run_batch(items, model=model):
+    for window_result in run_batch(items, model=model, windows_override=windows_override):
         facts = window_result.get("facts")
         if not facts:
             continue

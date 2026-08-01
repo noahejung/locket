@@ -192,12 +192,13 @@ def test_live_extraction_pipeline_scores_against_full_gold_set():
 
     from locket.store import Store
 
-    db_url = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@localhost:5432/locket")
+    db_url = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@127.0.0.1:5432/locket")
     store = Store(db_url)
     try:
         with store._conn.cursor() as cur:
             cur.execute(
-                "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals RESTART IDENTITY CASCADE"
+                "TRUNCATE raw_items, facts, entities, fact_history, merge_proposals, "
+                "extracted_windows RESTART IDENTITY CASCADE"
             )
         store._conn.commit()
 
