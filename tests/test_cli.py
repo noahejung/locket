@@ -20,7 +20,7 @@ import pytest
 
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
-from locket.cli import main
+from locket.cli import build_parser, main
 from locket.extraction.schemas import ExtractedFact, ExtractionResult
 from locket.models import FactKind
 from locket.store import Store
@@ -354,6 +354,34 @@ def test_serve_closes_store_even_if_mcp_run_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# serve-ui -- same close-on-every-exit-path contract as serve, above (Task: phone chat UI)
+# ---------------------------------------------------------------------------
+
+
+def test_serve_ui_closes_store_even_if_uvicorn_run_raises(monkeypatch):
+    """Mirrors test_serve_closes_store_even_if_mcp_run_raises above -- serve-ui has the
+    identical no-injectable-store-seam / blocks-for-the-process-lifetime shape as serve
+    (uvicorn.run(...) instead of mcp.run()), so it needs the same own try/finally."""
+    closed = []
+
+    class _FakeStore:
+        def close(self):
+            closed.append(True)
+
+    def _raising_run(app, host, port):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("locket.cli.Store", lambda url: _FakeStore())
+    monkeypatch.setattr("locket.webui.create_app", lambda store: object())
+    monkeypatch.setattr("uvicorn.run", _raising_run)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        main(["serve-ui"])
+
+    assert closed == [True]
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -366,6 +394,24 @@ def test_unknown_command_raises_systemexit():
 def test_pipeline_requires_a_subcommand():
     with pytest.raises(SystemExit):
         main(["pipeline"])
+
+
+def test_serve_ui_host_and_port_default_to_loopback_and_8765():
+    """Security posture (non-negotiable per the dispatch, mirrors the fix-wave-1 docker-
+    compose port-binding fix): --host must default to 127.0.0.1, never 0.0.0.0 -- binding
+    0.0.0.0 would expose answer_question's citable "profile of you" to the whole LAN, not
+    just the intended phone-over-Tailscale path."""
+    parser = build_parser()
+    args = parser.parse_args(["serve-ui"])
+    assert args.host == "127.0.0.1"
+    assert args.port == 8765
+
+
+def test_serve_ui_host_is_overridable():
+    parser = build_parser()
+    args = parser.parse_args(["serve-ui", "--host", "100.102.116.112", "--port", "9000"])
+    assert args.host == "100.102.116.112"
+    assert args.port == 9000
 
 
 def test_pipeline_run_forces_anthropic_backend_without_key_fails_clearly(store, tmp_path, monkeypatch, capsys):
@@ -403,3 +449,200 @@ def test_pipeline_run_without_key_defaults_to_ollama_backend_and_proceeds(store,
     )
 
     assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# pipeline run -- per-run JSONL capture (locket stats, metrics.md §1/§5)
+# ---------------------------------------------------------------------------
+
+
+class _RetryTwiceThenSucceedModel:
+    """Fails validation twice, then succeeds on the 3rd call -- exercises the counter-
+    surfacing path end-to-end through `pipeline run`: 2 retries, escalated on the 3rd
+    (final) call (ESCALATE_AFTER=2), zero give-ups. _write_mini_whatsapp_corpus's two
+    messages land in exactly one window, so every call here is for that same window."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def invoke(self, prompt: str) -> dict:
+        self.calls.append(prompt)
+        if len(self.calls) < 3:
+            return {"raw": None, "parsed": None, "parsing_error": ValueError("bad")}
+        fact = ExtractedFact(kind=FactKind.event, statement="Something happened", subjects=["Noah"], confidence=0.9)
+        return {"raw": None, "parsed": ExtractionResult(facts=[fact]), "parsing_error": None}
+
+
+def test_pipeline_run_appends_a_jsonl_run_record(store, tmp_path, monkeypatch):
+    """`evals/runs.local.jsonl` is resolved relative to the CWD at runtime (same convention
+    as the CLI's other relative defaults, e.g. `demo_corpus`) -- chdir into tmp_path so the
+    default path lands there instead of the real repo's evals/ directory."""
+    monkeypatch.chdir(tmp_path)
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_AlwaysOneFactModel(),
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    runs_log = tmp_path / "evals" / "runs.local.jsonl"
+    assert runs_log.exists()
+    lines = runs_log.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["windows_processed"] == 1
+    assert record["windows_skipped"] == 0
+    assert record["facts_added"] >= 1
+    assert record["dedup_hits"] == 0
+    assert record["wall_seconds"] >= 0
+    assert record["backend"] in {"anthropic", "ollama"}
+    assert record["model"]
+    assert "timestamp" in record
+
+
+def test_pipeline_run_second_invocation_appends_a_second_jsonl_line_with_zero_new_work(store, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_AlwaysOneFactModel(),
+        profile_model=_EchoProfileModel(),
+    )
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_AlwaysOneFactModel(),
+        profile_model=_EchoProfileModel(),
+    )
+
+    runs_log = tmp_path / "evals" / "runs.local.jsonl"
+    lines = runs_log.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2  # append-only -- the first run's line is still there
+    second = json.loads(lines[1])
+    assert second["windows_processed"] == 0  # the only window was already extracted
+    assert second["windows_skipped"] == 1
+    assert second["facts_added"] == 0
+
+
+def test_pipeline_run_json_summary_and_run_record_surface_retry_and_escalation_counters(
+    store, tmp_path, monkeypatch, capsys
+):
+    """Counter-surfacing test (this task's explicit test requirement): a model that fails
+    twice before succeeding must show up as retries=2/escalations=1/give_ups=0 in BOTH the
+    printed JSON summary and the appended run record -- proving the counters actually
+    travel extract_batch -> extract_and_persist -> _run_pipeline -> the JSONL line, not
+    just that extract_batch computes them correctly in isolation (already covered by
+    test_extraction_graph.py)."""
+    monkeypatch.chdir(tmp_path)
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+    model = _RetryTwiceThenSucceedModel()
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["retries"] == 2
+    assert summary["give_ups"] == 0
+    assert summary["escalations"] == 1
+    assert len(model.calls) == 3
+
+    runs_log = tmp_path / "evals" / "runs.local.jsonl"
+    record = json.loads(runs_log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["retries"] == 2
+    assert record["give_ups"] == 0
+    assert record["escalations"] == 1
+
+
+# ---------------------------------------------------------------------------
+# stats -- metrics.md §1/§5's DB aggregates + the last captured run record
+# ---------------------------------------------------------------------------
+
+
+def test_stats_json_reports_every_aggregate(store, tmp_path, monkeypatch, capsys):
+    from locket.embeddings import get_backend
+    from locket.models import Fact
+
+    monkeypatch.chdir(tmp_path)  # no evals/runs.local.jsonl yet in this cwd -> last_run is None
+
+    backend = get_backend()
+    raw = list(parse_whatsapp(DEMO_CORPUS / "whatsapp" / "team.txt", thread="team"))[:2]
+    store.add_raw_items(raw)
+
+    fact = Fact(kind=FactKind.habit, statement="Noah runs every morning", confidence=0.8, provenance=[raw[0].id])
+    fact_id = store.add_fact(fact, backend.embed_docs([fact.statement])[0])
+    store.update_fact(fact_id, confidence=0.9)  # ADD + UPDATE fact_history rows
+
+    john = store.upsert_entity("John", "person", backend.embed_docs(["John"])[0])
+    sarah = store.upsert_entity("Sarah", "person", backend.embed_docs(["Sarah"])[0])
+    store.add_merge_proposal("J", john, evidence="e", score=0.5)
+
+    exit_code = main(["stats", "--json"], store=store)
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["raw_items_by_source"] == {"whatsapp": 2}
+    assert payload["facts"]["total"] == 1
+    assert payload["facts"]["mean_confidence"] == pytest.approx(0.9)
+    assert payload["facts"]["by_kind"]["habit"]["count"] == 1
+    assert payload["entities"] == 2
+    assert payload["confirm_queue"]["depth"] == 1
+    assert payload["confirm_queue"]["oldest_age_seconds"] >= 0
+    assert payload["fact_history_events"]["ADD"] == 1
+    assert payload["fact_history_events"]["UPDATE"] == 1
+    assert payload["last_run"] is None
+    assert sarah  # sanity: fixture actually created the entity
+
+
+def test_stats_json_confirm_queue_is_null_when_empty(store, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["stats", "--json"], store=store)
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["confirm_queue"] == {"depth": 0, "oldest_created_at": None, "oldest_age_seconds": None}
+    assert payload["fact_history_events"] == {}
+
+
+def test_stats_human_readable_output_when_store_is_empty(store, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["stats"], store=store)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "raw items by source" in out
+    assert "facts: 0 total" in out
+    assert "entities: 0" in out
+    assert "confirm queue: empty" in out
+    assert "last pipeline run: none recorded yet" in out
+
+
+def test_stats_reports_the_last_pipeline_run_record(store, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_AlwaysOneFactModel(),
+        profile_model=_EchoProfileModel(),
+    )
+    capsys.readouterr()  # discard pipeline run's own stdout
+
+    exit_code = main(["stats", "--json"], store=store)
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["last_run"] is not None
+    assert payload["last_run"]["windows_processed"] == 1

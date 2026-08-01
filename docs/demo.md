@@ -92,6 +92,41 @@ relevancy/context-precision (RAG, against the 25 questions in
 `evals/questions.yaml`). `evals/BASELINE.md` has the full methodology and,
 once a key is available, the real recorded numbers.
 
+## 5. Phone testing (tailnet-only chat UI)
+
+`locket serve-ui` serves a small self-contained chat web page — one question
+box, answers with tappable `[fact:...]` citation chips that expand the
+source statement inline. It talks to the same `answer_question` logic the
+MCP server's tool uses (shared implementation, not a duplicate), so it's a
+second, independent frontend onto the same store.
+
+```bash
+uv run python -m locket.cli serve-ui
+```
+
+**Security posture — read before exposing this to your phone.** The default
+bind host is `127.0.0.1` (loopback only, reachable from this machine alone)
+and it never binds `0.0.0.0` by default — `answer_question` reads a
+citable, provenance-linked "profile of you," and `0.0.0.0` would expose
+that to every device on your LAN, not just your own phone over Tailscale.
+To actually reach it from a phone, pass your **Tailscale IP** explicitly:
+
+```bash
+# find your Tailscale IP first: `tailscale ip -4` (or check the Tailscale app)
+uv run python -m locket.cli serve-ui --host <your-tailscale-ip> --port 8765
+```
+
+Then, with Tailscale installed and signed in on the phone, open
+`http://<your-tailscale-ip>:8765` in the phone's browser. Nothing here is
+publicly reachable — only devices on your own tailnet can connect.
+
+**Honest latency note (shown in the UI itself, not just here):** on the
+local Ollama backend, an answer can take 30–90 seconds — the page shows a
+real elapsed-time counter ("thinking... 12s") while it waits, not a fake
+fast-looking spinner. This is also the surface for metrics.md §3's 10-
+question self-quiz and trust-incident log — the UX-testing loop this UI
+exists for.
+
 ## MCP registration (for the coordinator to run — not this session's job)
 
 **Claude Code:**

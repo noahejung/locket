@@ -1,4 +1,5 @@
-"""locket CLI: `locket ingest / pipeline run / label-faces / resolve / eval / profile / serve`.
+"""locket CLI: `locket ingest / pipeline run / label-faces / resolve / eval / profile /
+stats / serve / serve-ui`.
 
 argparse only, no CLI framework dependency, per PLAN.md Task 19. Heavy-dependency imports
 (vision models, evals/extraction_eval.py, evals/rag_eval.py) are deferred to the function
@@ -18,6 +19,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +31,11 @@ from locket.adapters.whatsapp import parse_whatsapp
 from locket.config import Settings
 from locket.extraction.chunking import windows
 from locket.extraction.graph import window_hash
-from locket.llm import resolve_backend
+from locket.llm import model_name, resolve_backend
 from locket.models import RawItem
 from locket.pipeline import discover_corpus_sources, extract_and_persist
 from locket.resolution import pending_confirmations, resolve
+from locket.stats import RunRecord, append_run_record, read_last_run_record
 from locket.store import Store
 
 # ~135s/image measured mean latency for the vision-LLM tail on this CPU-only machine
@@ -153,6 +157,10 @@ def _run_pipeline(
     raw_inserted = 0
     facts_created = 0
     windows_skipped = 0
+    windows_processed = 0
+    retries = 0
+    give_ups = 0
+    escalations = 0
     fact_subjects: list[tuple[str, list[str]]] = []
     mentions: set[str] = set()
 
@@ -174,13 +182,18 @@ def _run_pipeline(
         pending_windows = [w for w, h in zip(item_windows, hashes, strict=True) if h not in already_done]
         pending_hashes = [h for h in hashes if h not in already_done]
         windows_skipped += len(hashes) - len(pending_hashes)
+        windows_processed += len(pending_windows)
 
-        for row, subjects in extract_and_persist(
+        persisted = extract_and_persist(
             store, items, model=extraction_model, windows_override=pending_windows
-        ):
+        )
+        for row, subjects in persisted.rows:
             facts_created += 1
             fact_subjects.append((row.id, subjects))
             mentions.update(subjects)
+        retries += persisted.retries
+        give_ups += persisted.give_ups
+        escalations += persisted.escalations
 
         if pending_hashes:
             store.mark_windows_extracted(pending_hashes)
@@ -200,6 +213,10 @@ def _run_pipeline(
         "facts_created": facts_created,
         "mentions_seen": len(mentions),
         "windows_skipped": windows_skipped,
+        "windows_processed": windows_processed,
+        "retries": retries,
+        "give_ups": give_ups,
+        "escalations": escalations,
         "warnings": warnings,
     }
 
@@ -243,6 +260,17 @@ def _cmd_pipeline_run(
         return 1
 
     corpus_dir = Path(args.corpus_dir) if args.corpus_dir else (settings.corpus_dir or Path("demo_corpus"))
+
+    # Per-run capture (locket stats, metrics.md §1/§5): wall time wraps the WHOLE pipeline
+    # (vision pre-pass + extraction + resolution + profile synthesis), matching metrics.md
+    # §4's "pipeline wall-time per run" definition. facts_added is measured as the facts
+    # table's total row-count delta across the run (Store.fact_stats -- one cheap aggregate
+    # query before, one after) rather than threaded up from extract_and_persist, because
+    # "genuinely a new row" is exactly what add_fact's ON CONFLICT (hash) DO NOTHING
+    # decides, and that decision isn't otherwise surfaced to callers; dedup_hits is then the
+    # remainder (candidates processed this run that did NOT become a new row).
+    facts_before = store.fact_stats().total
+    started_at = time.monotonic()
     summary = _run_pipeline(
         store,
         corpus_dir,
@@ -252,6 +280,25 @@ def _cmd_pipeline_run(
         resolve_model=resolve_model,
         profile_model=profile_model,
     )
+    wall_seconds = time.monotonic() - started_at
+    facts_added = store.fact_stats().total - facts_before
+
+    append_run_record(
+        RunRecord(
+            timestamp=datetime.now(UTC).isoformat(),
+            backend=resolve_backend(settings),
+            model=model_name("extraction_default", settings),
+            windows_processed=summary["windows_processed"],
+            windows_skipped=summary["windows_skipped"],
+            facts_added=facts_added,
+            dedup_hits=summary["facts_created"] - facts_added,
+            retries=summary["retries"],
+            give_ups=summary["give_ups"],
+            escalations=summary["escalations"],
+            wall_seconds=wall_seconds,
+        )
+    )
+
     print(json.dumps(summary, indent=2))
     for w in summary.get("warnings", []):
         print(f"WARNING: {w}", file=sys.stderr)
@@ -369,6 +416,75 @@ def _cmd_profile_build(store: Store, *, model: Any | None) -> int:
     return 0
 
 
+def _cmd_stats(args: argparse.Namespace, store: Store) -> int:
+    """metrics.md §1/§5's `locket stats`: every §1 DB aggregate in one command, plus the
+    last `pipeline run`'s captured JSONL line (if any exist yet) -- makes every §1 metric a
+    one-command check without hand-querying Postgres."""
+    raw_by_source = store.raw_item_counts_by_source()
+    facts = store.fact_stats()
+    entities = store.entity_count()
+    queue = store.confirm_queue_stats()
+    history = store.fact_history_event_counts()
+    last_run = read_last_run_record()
+    queue_age_seconds = (
+        (datetime.now(UTC) - queue.oldest_created_at).total_seconds()
+        if queue.oldest_created_at is not None
+        else None
+    )
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "raw_items_by_source": raw_by_source,
+                    "facts": {
+                        "total": facts.total,
+                        "mean_confidence": facts.mean_confidence,
+                        "by_kind": {
+                            kind: {"count": ks.count, "mean_confidence": ks.mean_confidence}
+                            for kind, ks in facts.by_kind.items()
+                        },
+                    },
+                    "entities": entities,
+                    "confirm_queue": {
+                        "depth": queue.depth,
+                        "oldest_created_at": (
+                            queue.oldest_created_at.isoformat() if queue.oldest_created_at else None
+                        ),
+                        "oldest_age_seconds": queue_age_seconds,
+                    },
+                    "fact_history_events": history,
+                    "last_run": last_run,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print("raw items by source:")
+    for source, count in sorted(raw_by_source.items()):
+        print(f"  {source}: {count}")
+    print(f"facts: {facts.total} total (mean confidence {facts.mean_confidence:.2f})")
+    for kind, ks in sorted(facts.by_kind.items()):
+        print(f"  {kind}: {ks.count} (mean confidence {ks.mean_confidence:.2f})")
+    print(f"entities: {entities}")
+    if queue.depth:
+        print(f"confirm queue: {queue.depth} pending, oldest {queue_age_seconds:,.0f}s old")
+    else:
+        print("confirm queue: empty")
+    print("fact history events:")
+    if history:
+        for event, count in sorted(history.items()):
+            print(f"  {event}: {count}")
+    else:
+        print("  none yet")
+    if last_run:
+        print(f"last pipeline run: {json.dumps(last_run)}")
+    else:
+        print("last pipeline run: none recorded yet (run `locket pipeline run`)")
+    return 0
+
+
 def _cmd_serve(settings: Settings) -> int:
     """Unlike every other subcommand, `serve` bypasses main()'s shared owns_store
     try/finally entirely (it has no injectable `store=` seam -- a real serve blocks on
@@ -380,6 +496,31 @@ def _cmd_serve(settings: Settings) -> int:
     try:
         mcp = build_server(store)
         mcp.run()
+        return 0
+    finally:
+        store.close()
+
+
+def _cmd_serve_ui(args: argparse.Namespace, settings: Settings) -> int:
+    """Phone chat UI (Task, setup-guide.md Part 2 Option 2). Mirrors `_cmd_serve` exactly:
+    `uvicorn.run(...)` blocks for the process lifetime same as `mcp.run()`, so this bypasses
+    main()'s shared owns_store try/finally too, for the identical reason -- no injectable
+    `store=` seam, own try/finally for close-on-every-exit-path including a raise from
+    uvicorn itself.
+
+    `args.host` defaults to 127.0.0.1 (argparse wiring below) -- never 0.0.0.0 by default.
+    See webui.py's module docstring for why: answer_question reads a citable "profile of
+    you", and 0.0.0.0 would expose it to the whole LAN, not just the intended
+    phone-over-Tailscale path. Pass --host <your-tailscale-ip> explicitly for phone access.
+    """
+    import uvicorn
+
+    from locket.webui import create_app
+
+    store = Store(settings.db_url)
+    try:
+        app = create_app(store)
+        uvicorn.run(app, host=args.host, port=args.port)
         return 0
     finally:
         store.close()
@@ -427,7 +568,22 @@ def build_parser() -> argparse.ArgumentParser:
     profile_sub = p_profile.add_subparsers(dest="profile_command", required=True)
     profile_sub.add_parser("build", help="Synthesize and persist the living profile")
 
+    p_stats = sub.add_parser("stats", help="Print pipeline/store health metrics (metrics.md §1)")
+    p_stats.add_argument("--json", action="store_true")
+
     sub.add_parser("serve", help="Run the MCP stdio server")
+
+    p_serve_ui = sub.add_parser("serve-ui", help="Serve the phone chat UI (tailnet-only web page)")
+    p_serve_ui.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "bind host -- defaults to loopback (127.0.0.1) and never binds 0.0.0.0 by "
+            "default; pass your tailscale IP explicitly for phone access, e.g. "
+            "--host 100.102.116.112 (see docs/demo.md)"
+        ),
+    )
+    p_serve_ui.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
 
     return parser
 
@@ -447,6 +603,8 @@ def main(
 
     if args.command == "serve":
         return _cmd_serve(settings)
+    if args.command == "serve-ui":
+        return _cmd_serve_ui(args, settings)
 
     owns_store = store is None
     active_store = store if store is not None else Store(settings.db_url)
@@ -472,6 +630,8 @@ def main(
             return _cmd_eval_rag(args, active_store, answer_model=rag_answer_model)
         if args.command == "profile" and args.profile_command == "build":
             return _cmd_profile_build(active_store, model=profile_model)
+        if args.command == "stats":
+            return _cmd_stats(args, active_store)
         parser.error("unrecognized command")
         return 2
     finally:
