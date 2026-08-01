@@ -132,7 +132,11 @@ def get_chat_model(role: str, settings: Settings) -> Any:
 
         if role not in _ANTHROPIC_MODEL_IDS:
             raise ValueError(f"unknown role {role!r} -- not in {sorted(_ANTHROPIC_MODEL_IDS)}")
-        return ChatAnthropic(model=_ANTHROPIC_MODEL_IDS[role])
+        # temperature=0 for parity with the ollama branch below -- an unpinned Anthropic
+        # temperature defaults to the API's own non-zero value, undermining the point of
+        # the statement-hash dedup and the extracted-windows watermark: identical input
+        # should extract identically on a re-run, not just usually.
+        return ChatAnthropic(model=_ANTHROPIC_MODEL_IDS[role], temperature=0)
 
     from langchain_ollama import ChatOllama
 

@@ -64,6 +64,7 @@ def test_get_chat_model_ollama_backend_returns_chat_ollama(monkeypatch):
     model = get_chat_model("extraction_default", _settings(api_key=None))
     assert isinstance(model, ChatOllama)
     assert model.model == "qwen2.5:3b-instruct"
+    assert model.temperature == 0
 
 
 def test_get_chat_model_anthropic_backend_returns_chat_anthropic_with_correct_model_id(monkeypatch):
@@ -84,3 +85,15 @@ def test_get_chat_model_unknown_role_on_anthropic_backend_raises(monkeypatch):
     monkeypatch.setenv("LOCKET_LLM_BACKEND", "anthropic")
     with pytest.raises(ValueError, match="unknown role"):
         get_chat_model("not_a_real_role", _settings(api_key=None))
+
+
+def test_get_chat_model_anthropic_backend_uses_temperature_zero_for_determinism(monkeypatch):
+    """Parity with the ollama backend (test_get_chat_model_ollama_backend_returns_chat_ollama
+    above already asserts ChatOllama(..., temperature=0)) -- an unpinned Anthropic
+    temperature (defaults to None, i.e. the API's own non-zero default) made
+    extraction/resolution/profile non-deterministic across identical pipeline runs,
+    undermining the point of the statement-hash dedup and the extracted-windows watermark
+    (fix-wave-1 item 8): a re-run over unchanged input could still produce different facts."""
+    monkeypatch.setenv("LOCKET_LLM_BACKEND", "anthropic")
+    model = get_chat_model("extraction_default", _settings(api_key=None))
+    assert model.temperature == 0
