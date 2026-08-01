@@ -48,7 +48,11 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "google-genai==2.16.0"]
+# google-genai removed (fix-wave-2 item 7): declared but imported nowhere -- the README's
+# Gemini-for-synthetic-corpus path and the --cloud-ok Claude photo fallback are documented
+# as planned, not implemented (security audit 2026-07-31, INFO #1). Re-add when either
+# lands for real.
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]

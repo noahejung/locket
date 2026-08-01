@@ -120,13 +120,14 @@ Stated plainly, not hand-waved:
   model, for real photos.
 - **Gemini's free tier is explicitly forbidden for real photos.** Google's
   free-tier terms grant Google the right to train on and have humans review
-  submitted content — unacceptable for private photos of your life. Gemini
-  is permitted only as an opt-in path for generating the *synthetic* demo
-  corpus, where no privacy stakes exist (the faces are AI-generated, MIT-
-  licensed SFHQ portraits, and every conversation is invented). A paid
-  Claude-API fallback for real photos exists behind an explicit `--cloud-ok`
-  flag if local Ollama is unavailable — still Anthropic's no-training terms,
-  never Gemini free tier.
+  submitted content — unacceptable for private photos of your life. Using
+  Gemini as an opt-in path for generating the *synthetic* demo corpus (where
+  no privacy stakes exist — the faces are AI-generated, MIT-licensed SFHQ
+  portraits, and every conversation is invented) is **planned, not yet
+  implemented** — no code path calls it today. A paid Claude-API fallback
+  for real photos behind an explicit `--cloud-ok` flag, for when local
+  Ollama is unavailable, is likewise planned and not yet implemented — still
+  Anthropic's no-training terms, never Gemini free tier, once it exists.
 - **Your real exports never enter this repository.** They're read from
   `LOCKET_CORPUS_DIR`, an env var pointing outside the repo, declared in a
   local, gitignored `.env`. `.gitignore` also blocks `real_corpus/` and
