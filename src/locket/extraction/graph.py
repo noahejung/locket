@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import operator
+from dataclasses import dataclass
 from functools import cache
 from typing import Annotated, Any, TypedDict
 
@@ -218,15 +219,55 @@ def run_batch(
     return final["results"]
 
 
+@dataclass
+class BatchExtractionResult:
+    """extract_batch's full return: every (ExtractedFact, provenance) pair the batch
+    produced, plus per-run counters derived from the same per-window terminal states
+    run_batch already computes (module docstring's "attempts in state") -- total retry
+    calls, windows that gave up, and windows whose final attempt escalated to the quality
+    model. Surfaced for `locket stats`'s per-run JSONL capture (metrics.md §1/§5); a plain
+    list return has nowhere to carry these without a second pass back over run_batch's raw
+    per-window dicts at every call site.
+
+    `facts`, not `rows` -- elements are still ExtractedFact (pre-persistence); pipeline.py's
+    extract_and_persist has its own explicit result type (ExtractAndPersistResult, `rows`)
+    for the post-persistence FactRow shape, one layer up."""
+
+    facts: list[tuple[ExtractedFact, list[str]]]
+    retries: int
+    give_ups: int
+    escalations: int
+
+
 def extract_batch(
     items: list[RawItem], *, model: Any | None = None, windows_override: list[list[RawItem]] | None = None
-) -> list[tuple[ExtractedFact, list[str]]]:
+) -> BatchExtractionResult:
     out: list[tuple[ExtractedFact, list[str]]] = []
+    retries = 0
+    give_ups = 0
+    escalations = 0
     for window_result in run_batch(items, model=model, windows_override=windows_override):
+        # `attempt` is the per-window state's post-increment call count (_initial_window_state
+        # starts it at 0; extract_node increments once per model call) -- always >= 1 in a
+        # final result, since process_window only returns once the subgraph reaches END
+        # (either "done" or "give_up"), and both routes require at least one extract_node
+        # call to have happened. retries = calls beyond the first; escalation is decided by
+        # the SAME _should_escalate(attempt) extract_node itself used to pick the model for
+        # the last call made (attempt's pre-increment value, i.e. attempt - 1 here).
+        attempt = window_result["attempt"]
+        retries += attempt - 1
+        if _should_escalate(attempt - 1):
+            escalations += 1
+
         facts = window_result.get("facts")
-        if not facts:
+        # None (never reached a valid structured response) means give-up -- distinct from a
+        # validly-empty list (the window legitimately contained zero extractable facts,
+        # which is route()'s "done" outcome, not "give_up"). Conflating the two would count
+        # ordinary chit-chat windows as pipeline failures.
+        if facts is None:
+            give_ups += 1
             continue
         provenance = window_result["provenance"]
         for fact_dict in facts:
             out.append((ExtractedFact.model_validate(fact_dict), provenance))
-    return out
+    return BatchExtractionResult(facts=out, retries=retries, give_ups=give_ups, escalations=escalations)

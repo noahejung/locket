@@ -159,7 +159,7 @@ def run_extraction_pipeline(store: Store, corpus_dir: Path, *, model: Any | None
         if not items:
             continue
         store.add_raw_items(items)
-        rows.extend(row for row, _subjects in extract_and_persist(store, items, model=model))
+        rows.extend(row for row, _subjects in extract_and_persist(store, items, model=model).rows)
     return rows
 
 

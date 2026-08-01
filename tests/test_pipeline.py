@@ -93,12 +93,16 @@ def test_extract_and_persist_batches_all_fact_embeddings_into_one_call(store, mo
     item_a, item_b = _item("a"), _item("b")
     model = _ThreeFactsPerWindowModel()
 
-    results = extract_and_persist(store, [item_a, item_b], model=model, windows_override=[[item_a], [item_b]])
+    result = extract_and_persist(store, [item_a, item_b], model=model, windows_override=[[item_a], [item_b]])
 
-    assert len(results) == 6  # 2 windows x 3 facts/window
+    assert len(result.rows) == 6  # 2 windows x 3 facts/window
     assert len(model.calls) == 2  # one model call per window -- extraction itself unbatched
     assert len(backend.calls) == 1  # but exactly ONE embed_docs call for every statement
     assert len(backend.calls[0]) == 6
+    # Both windows succeeded on their first call -- zero retries/give-ups/escalations.
+    assert result.retries == 0
+    assert result.give_ups == 0
+    assert result.escalations == 0
 
 
 def test_extract_and_persist_returns_fact_rows_paired_with_extracted_subjects(store, monkeypatch):
@@ -109,12 +113,12 @@ def test_extract_and_persist_returns_fact_rows_paired_with_extracted_subjects(st
     monkeypatch.setattr("locket.pipeline.get_backend", lambda: backend)
     item_a = _item("a")
 
-    results = extract_and_persist(store, [item_a], model=_ThreeFactsPerWindowModel(), windows_override=[[item_a]])
+    result = extract_and_persist(store, [item_a], model=_ThreeFactsPerWindowModel(), windows_override=[[item_a]])
 
-    assert len(results) == 3
-    statements = {row.statement for row, _subjects in results}
+    assert len(result.rows) == 3
+    statements = {row.statement for row, _subjects in result.rows}
     assert statements == {"fact 0 from call 1", "fact 1 from call 1", "fact 2 from call 1"}
-    for row, subjects in results:
+    for row, subjects in result.rows:
         assert subjects == ["Noah"]
         assert row.id  # a real persisted fact id
         assert row.provenance == [item_a.id]
@@ -132,7 +136,31 @@ def test_extract_and_persist_no_facts_makes_no_embed_call(store, monkeypatch):
             return {"raw": None, "parsed": ExtractionResult(facts=[]), "parsing_error": None}
 
     item_a = _item("a")
-    results = extract_and_persist(store, [item_a], model=_NoFactsModel(), windows_override=[[item_a]])
+    result = extract_and_persist(store, [item_a], model=_NoFactsModel(), windows_override=[[item_a]])
 
-    assert results == []
+    assert result.rows == []
+    assert result.give_ups == 0  # a validly-empty extraction, not a give-up
+    assert backend.calls == []
+
+
+def test_extract_and_persist_bubbles_up_extract_batch_counters_for_a_give_up_window(store, monkeypatch):
+    """Companion to extract_batch's own counter tests (test_extraction_graph.py): this
+    function is extract_batch's one caller in the whole codebase, so it must pass retries/
+    give_ups/escalations through unchanged even on the empty-rows early-return path -- a
+    window that gives up entirely still has counters worth reporting in the per-run JSONL
+    capture (locket stats), not just windows that produced at least one fact."""
+    backend = _CountingBackend()
+    monkeypatch.setattr("locket.pipeline.get_backend", lambda: backend)
+
+    class _AlwaysInvalidModel:
+        def invoke(self, prompt: str) -> dict:
+            return {"raw": None, "parsed": None, "parsing_error": ValueError("bad")}
+
+    item_a = _item("a")
+    result = extract_and_persist(store, [item_a], model=_AlwaysInvalidModel(), windows_override=[[item_a]])
+
+    assert result.rows == []
+    assert result.give_ups == 1
+    assert result.retries == 2  # MAX_ATTEMPTS=3 calls -> 2 retries before giving up
+    assert result.escalations == 1  # 3rd (final) call escalated
     assert backend.calls == []

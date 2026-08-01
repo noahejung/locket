@@ -73,16 +73,20 @@ def test_fan_out_returns_facts_from_both_windows_with_correct_provenance():
         ]
     )
 
-    results = extract_batch(window_a + window_b, model=model)
+    result = extract_batch(window_a + window_b, model=model)
 
-    assert len(results) == 2
-    statements = {fact.statement for fact, _prov in results}
+    assert len(result.facts) == 2
+    statements = {fact.statement for fact, _prov in result.facts}
     assert statements == {"Fact from window A", "Fact from window B"}
-    for fact, provenance in results:
+    for fact, provenance in result.facts:
         if fact.statement == "Fact from window A":
             assert provenance == [window_a[0].id]
         else:
             assert provenance == [window_b[0].id]
+    # Both windows succeeded on their first call -- zero retries/give-ups/escalations.
+    assert result.retries == 0
+    assert result.give_ups == 0
+    assert result.escalations == 0
 
 
 def test_corrective_retry_feeds_error_text_into_the_retry_prompt():
@@ -93,13 +97,18 @@ def test_corrective_retry_feeds_error_text_into_the_retry_prompt():
         [(lambda p: "retryme" in p, [_err("kind must be one of the enum values"), _ok("Recovered fact")])]
     )
 
-    results = extract_batch(items, model=model)
+    result = extract_batch(items, model=model)
 
-    assert len(results) == 1
-    assert results[0][0].statement == "Recovered fact"
+    assert len(result.facts) == 1
+    assert result.facts[0][0].statement == "Recovered fact"
     assert len(model.calls) == 2
     assert "kind must be one of the enum values" not in model.calls[0]
     assert "kind must be one of the enum values" in model.calls[1]
+    # Succeeded on the 2nd call -- 1 retry, not yet escalated (ESCALATE_AFTER=2 means
+    # escalation only kicks in on the 3rd call), no give-up.
+    assert result.retries == 1
+    assert result.escalations == 0
+    assert result.give_ups == 0
 
 
 def test_three_failures_give_up_with_notes_marker_not_exception():
@@ -133,11 +142,48 @@ def test_give_up_window_does_not_block_a_sibling_windows_facts():
         ]
     )
 
-    results = extract_batch(failing + succeeding, model=model)  # no exception raised
+    result = extract_batch(failing + succeeding, model=model)  # no exception raised
 
-    assert len(results) == 1
-    assert results[0][0].statement == "A fine fact"
-    assert results[0][1] == [succeeding[0].id]
+    assert len(result.facts) == 1
+    assert result.facts[0][0].statement == "A fine fact"
+    assert result.facts[0][1] == [succeeding[0].id]
+    # failing window: 3 attempts -> 2 retries, escalated on its final (3rd) call, gave up.
+    # succeeding window: 1 attempt -> 0 retries, no escalation, no give-up. Summed:
+    assert result.retries == 2
+    assert result.give_ups == 1
+    assert result.escalations == 1
+
+
+def test_extract_batch_surfaces_retry_give_up_and_escalation_counters_across_a_mixed_batch():
+    """Dedicated counter-surfacing test (locket stats / per-run JSONL capture task): three
+    windows, each exercising a different terminal state, prove BatchExtractionResult's
+    retries/give_ups/escalations are summed correctly across a batch, not just correct for
+    a single window in isolation (the two tests above each only ever have one non-trivial
+    window)."""
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    retried_then_ok = [_item(base, "retrywin hello")]
+    gave_up = [_item(base + timedelta(hours=10), "givewin hello")]
+    clean = [_item(base + timedelta(hours=20), "cleanwin hello")]
+
+    model = _ScriptedModel(
+        [
+            (lambda p: "retrywin" in p, [_err("bad"), _ok("Recovered fact")]),
+            (lambda p: "givewin" in p, [_err("bad 1"), _err("bad 2"), _err("bad 3")]),
+            (lambda p: "cleanwin" in p, [_ok("Clean fact")]),
+        ]
+    )
+
+    result = extract_batch(retried_then_ok + gave_up + clean, model=model)
+
+    assert len(result.facts) == 2  # the give-up window contributes nothing
+    statements = {fact.statement for fact, _prov in result.facts}
+    assert statements == {"Recovered fact", "Clean fact"}
+    # retried_then_ok: 2 calls -> 1 retry, not escalated (ESCALATE_AFTER=2 only bites on the
+    # 3rd call). gave_up: 3 calls -> 2 retries, escalated on its final call, and gave up.
+    # clean: 1 call -> 0 retries, not escalated. Summed: retries = 1 + 2 + 0 = 3.
+    assert result.retries == 3
+    assert result.give_ups == 1
+    assert result.escalations == 1
 
 
 def test_hard_model_error_gives_up_that_window_without_aborting_the_batch():
@@ -182,8 +228,9 @@ def test_hard_model_error_gives_up_that_window_without_aborting_the_batch():
 
     # extract_batch's flattening wrapper over the same run must also stay upright end-to-end.
     flattened = extract_batch(failing + succeeding, model=model)
-    assert len(flattened) == 1
-    assert flattened[0][0].statement == "A fine fact despite the sibling's outage"
+    assert len(flattened.facts) == 1
+    assert flattened.facts[0][0].statement == "A fine fact despite the sibling's outage"
+    assert flattened.give_ups == 1  # the hard-error window, same terminal state as validation give-ups
 
 
 @pytest.mark.llm
@@ -196,10 +243,10 @@ def test_live_smoke_extracts_at_least_one_plausible_fact():
     demo = Path(__file__).parent.parent / "demo_corpus" / "whatsapp" / "team.txt"
     items = list(parse_whatsapp(demo, thread="team"))[:16]  # one window's worth
 
-    results = extract_batch(items)
+    result = extract_batch(items)
 
-    assert len(results) >= 1
-    for fact, provenance in results:
+    assert len(result.facts) >= 1
+    for fact, provenance in result.facts:
         assert fact.kind in set(FactKind)
         assert provenance
         assert all(p in {i.id for i in items} for p in provenance)
@@ -239,10 +286,10 @@ def test_live_local_backend_extracts_a_validated_result_from_one_window():
         ExtractionResult, method="json_schema", include_raw=True
     )
 
-    results = extract_batch(items, model=model)
+    result = extract_batch(items, model=model)
 
-    assert len(results) >= 1
-    for fact, provenance in results:
+    assert len(result.facts) >= 1
+    for fact, provenance in result.facts:
         assert fact.kind in set(FactKind)
         assert provenance
         assert all(p in {i.id for i in items} for p in provenance)

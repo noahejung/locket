@@ -16,6 +16,7 @@ only calls Store's already-public methods.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -67,13 +68,28 @@ def discover_corpus_sources(corpus_dir: Path) -> tuple[list[tuple[str, list[RawI
     return groups, warnings
 
 
+@dataclass
+class ExtractAndPersistResult:
+    """extract_and_persist's full return: every (FactRow, subjects) pair persisted this
+    call, plus extract_batch's retry/give-up/escalation counters bubbled through unchanged
+    -- this function makes extract_batch's one call in the whole codebase, so it's the only
+    place those counters can be picked up on their way to cli.py's per-run JSONL capture
+    (`locket stats`, metrics.md §1/§5). `rows`, not `facts` (extract_batch's own field name)
+    -- elements here are already-persisted FactRow, not the pre-persistence ExtractedFact."""
+
+    rows: list[tuple[FactRow, list[str]]]
+    retries: int
+    give_ups: int
+    escalations: int
+
+
 def extract_and_persist(
     store: Store,
     items: list[RawItem],
     *,
     model: Any | None = None,
     windows_override: list[list[RawItem]] | None = None,
-) -> list[tuple[FactRow, list[str]]]:
+) -> ExtractAndPersistResult:
     """Runs extract_batch over `items`, persists each resulting fact via store.add_fact,
     and returns (FactRow, subjects) pairs. Subjects ride alongside the row because
     FactRow itself only carries entity_ids (populated later, by resolution) -- callers that
@@ -92,9 +108,11 @@ def extract_and_persist(
     separate model call per fact before this module unified them.
     """
     backend = get_backend()
-    extracted = extract_batch(items, model=model, windows_override=windows_override)
-    if not extracted:
-        return []
+    batch = extract_batch(items, model=model, windows_override=windows_override)
+    if not batch.facts:
+        return ExtractAndPersistResult(
+            rows=[], retries=batch.retries, give_ups=batch.give_ups, escalations=batch.escalations
+        )
 
     facts = [
         Fact(
@@ -106,12 +124,12 @@ def extract_and_persist(
             happened_at=extracted_fact.happened_at,
             provenance=provenance,
         )
-        for extracted_fact, provenance in extracted
+        for extracted_fact, provenance in batch.facts
     ]
     embeddings = backend.embed_docs([fact.statement for fact in facts])
 
     out: list[tuple[FactRow, list[str]]] = []
-    for (extracted_fact, _provenance), fact, embedding in zip(extracted, facts, embeddings, strict=True):
+    for (extracted_fact, _provenance), fact, embedding in zip(batch.facts, facts, embeddings, strict=True):
         fact_id = store.add_fact(fact, embedding)
         row = FactRow(
             id=fact_id,
@@ -125,7 +143,9 @@ def extract_and_persist(
             invalid_at=None,
         )
         out.append((row, extracted_fact.subjects))
-    return out
+    return ExtractAndPersistResult(
+        rows=out, retries=batch.retries, give_ups=batch.give_ups, escalations=batch.escalations
+    )
 
 
-__all__ = ["discover_corpus_sources", "extract_and_persist"]
+__all__ = ["ExtractAndPersistResult", "discover_corpus_sources", "extract_and_persist"]
