@@ -62,3 +62,50 @@ def test_no_source_tz_given_defaults_to_the_resolved_local_timezone(monkeypatch)
 def test_source_tz_utc_is_a_no_op():
     items = list(parse_whatsapp(FIX / "whatsapp_android.txt", thread="team", source_tz=UTC))
     assert items[0].ts == datetime(2025, 1, 15, 10, 32, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# unmatched-line counting (fix-wave-1 item 5a) -- a line with no header match AND no
+# pending message to continue was silently dropped with no signal at all.
+# ---------------------------------------------------------------------------
+
+
+def test_well_formed_file_reports_zero_unmatched_lines():
+    warnings: list[str] = []
+    list(parse_whatsapp(FIX / "whatsapp_android.txt", thread="team", warnings=warnings))
+    assert warnings == []
+
+
+def test_orphan_line_with_no_pending_message_is_counted_not_silently_dropped(tmp_path):
+    # The very first line of the file is in a header shape neither regex recognizes (a
+    # locale variant with a narrow no-break space before AM/PM, say) -- there is no
+    # "pending" message yet for it to continue, so pre-fix this line vanished with zero
+    # trace. It should now be counted and surfaced via `warnings`.
+    p = tmp_path / "orphan.txt"
+    p.write_text(
+        "this line matches no header shape at all\n"
+        "1/15/25, 10:32 AM - John: real message\n",
+        encoding="utf-8",
+    )
+    warnings: list[str] = []
+    items = list(parse_whatsapp(p, thread="t", warnings=warnings))
+    assert len(items) == 1  # the one real message still parses
+    assert len(warnings) == 1
+    assert "1" in warnings[0]  # names the count
+    assert str(p) in warnings[0] or p.name in warnings[0]  # names the file
+
+
+def test_fully_unparseable_file_is_loud_zero_items_and_a_warning(tmp_path):
+    # A whole file in a format neither regex recognizes at all -- zero items parsed, and
+    # this must be LOUD (a warning naming every dropped line), never a silent empty result
+    # indistinguishable from "this file genuinely had nothing in it."
+    p = tmp_path / "unparseable.txt"
+    p.write_text(
+        "totally unrecognized line one\ntotally unrecognized line two\n",
+        encoding="utf-8",
+    )
+    warnings: list[str] = []
+    items = list(parse_whatsapp(p, thread="t", warnings=warnings))
+    assert items == []
+    assert len(warnings) == 1
+    assert "2" in warnings[0]  # both orphan lines counted

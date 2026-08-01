@@ -99,14 +99,25 @@ def _split_pending(pending: dict) -> RawItem:
 
 
 def parse_whatsapp(
-    path: Path, thread: str | None = None, source_tz: tzinfo | None = None
+    path: Path,
+    thread: str | None = None,
+    source_tz: tzinfo | None = None,
+    *,
+    warnings: list[str] | None = None,
 ) -> Iterator[RawItem]:
     """`source_tz` is the timezone the export's header timestamps were written in --
     defaults to the system's local timezone (`_local_tz()`) since that's the export
     device's own clock in the overwhelmingly common case. Pass it explicitly when ingesting
-    an export known to be from a different timezone than the machine running locket."""
+    an export known to be from a different timezone than the machine running locket.
+
+    `warnings`, if given, gets one human-readable message appended if any line in the file
+    matched neither header regex AND had no pending message to continue -- e.g. a whole
+    export in an unrecognized locale variant (a differently-formatted AM/PM marker, say)
+    would otherwise parse to zero items with no trace of why. A normal multiline message
+    continuation is NOT counted here -- only lines with nothing to attach to."""
     tz = source_tz if source_tz is not None else _local_tz()
     pending: dict | None = None
+    unmatched = 0
     with open(path, encoding="utf-8") as fh:
         for raw_line in fh:
             line = raw_line.rstrip("\n").rstrip("\r")
@@ -119,13 +130,18 @@ def parse_whatsapp(
                     yield _split_pending(pending)
                 ts, remainder = header
                 pending = {"ts": ts, "text": remainder, "thread": thread}
+            elif pending is None:
+                # No header match AND nothing pending to continue -- an unrecognized-format
+                # line, not a real multiline continuation. Count it instead of dropping it
+                # with no trace.
+                unmatched += 1
             else:
                 # Continuation of the previous message (multiline text).
-                if pending is None:
-                    continue
                 pending["text"] += "\n" + line
         if pending is not None:
             yield _split_pending(pending)
+    if unmatched and warnings is not None:
+        warnings.append(f"{unmatched} unmatched line(s) in {path} could not be parsed as a message header")
 
 
 register(".txt", parse_whatsapp)

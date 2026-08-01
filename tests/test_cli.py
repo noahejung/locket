@@ -123,6 +123,20 @@ def test_ingest_unknown_extension_raises(store, tmp_path):
         main(["ingest", str(bogus)], store=store)
 
 
+def test_ingest_prints_a_warning_for_unparseable_whatsapp_lines(store, tmp_path, capsys):
+    """Fix-wave-1 item 5a: a whatsapp .txt with unrecognized-format lines must print a
+    WARNING to stderr naming the count -- not silently ingest zero items with no trace."""
+    bogus = tmp_path / "weird_locale.txt"
+    bogus.write_text("totally unrecognized line one\ntotally unrecognized line two\n", encoding="utf-8")
+
+    exit_code = main(["ingest", str(bogus)], store=store)
+
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "2" in err
+
+
 # ---------------------------------------------------------------------------
 # pipeline run -- the new orchestration logic, --skip-vision + stubbed extraction/profile
 # ---------------------------------------------------------------------------

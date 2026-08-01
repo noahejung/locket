@@ -46,34 +46,44 @@ _PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
 # ---------------------------------------------------------------------------
 
 
-def _ingest_source(path: Path) -> list[RawItem]:
+def _ingest_source(path: Path) -> tuple[list[RawItem], list[str]]:
     """Adapter auto-detection by shape (plan's exact rule): ".txt" -> whatsapp, ".xml" ->
     sms, a directory containing message_*.json -> instagram, any other directory -> photos.
-    """
+    Second element is any non-fatal parse warnings the adapter collected (e.g. whatsapp's
+    unmatched-line count) -- callers surface these; a silently-empty result is exactly what
+    the warnings exist to distinguish from "genuinely nothing here"."""
+    warnings: list[str] = []
     if path.is_dir():
         if any(path.glob("message_*.json")):
-            return list(parse_instagram_thread(path))
-        return list(parse_photos(path))
+            return list(parse_instagram_thread(path)), warnings
+        return list(parse_photos(path)), warnings
     suffix = path.suffix.lower()
     if suffix == ".txt":
-        return list(parse_whatsapp(path, thread=path.stem))
+        return list(parse_whatsapp(path, thread=path.stem, warnings=warnings)), warnings
     if suffix == ".xml":
-        return list(parse_sms_xml(path))
+        return list(parse_sms_xml(path)), warnings
     raise ValueError(f"don't know how to ingest {path} (expected .txt, .xml, or a directory)")
 
 
-def _discover_corpus_sources(corpus_dir: Path) -> list[tuple[str, list[RawItem]]]:
+def _discover_corpus_sources(corpus_dir: Path) -> tuple[list[tuple[str, list[RawItem]]], list[str]]:
     """(label, items) pairs, one per conversation/source, kept separate so windows() (inside
     extract_batch) never mixes unrelated threads -- mirrors evals/extraction_eval.py's
     _demo_sources, generalized to walk whatever files exist under corpus_dir rather than
     hardcoding the demo corpus's exact filenames (a real corpus's whatsapp/ dir won't be
-    named team.txt/sarah.txt)."""
+    named team.txt/sarah.txt). Second element: every adapter parse warning collected across
+    the whole corpus (see _ingest_source)."""
     groups: list[tuple[str, list[RawItem]]] = []
+    warnings: list[str] = []
 
     wa_dir = corpus_dir / "whatsapp"
     if wa_dir.is_dir():
         for txt_path in sorted(wa_dir.glob("*.txt")):
-            groups.append((f"whatsapp:{txt_path.stem}", list(parse_whatsapp(txt_path, thread=txt_path.stem))))
+            groups.append(
+                (
+                    f"whatsapp:{txt_path.stem}",
+                    list(parse_whatsapp(txt_path, thread=txt_path.stem, warnings=warnings)),
+                )
+            )
 
     sms_dir = corpus_dir / "sms"
     if sms_dir.is_dir():
@@ -89,7 +99,7 @@ def _discover_corpus_sources(corpus_dir: Path) -> list[tuple[str, list[RawItem]]
     if photos_dir.is_dir():
         groups.append(("photos", list(parse_photos(photos_dir))))
 
-    return groups
+    return groups, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +181,10 @@ def _run_pipeline(
     extraction_model: Any | None,
     resolve_model: Any | None,
     profile_model: Any | None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     from locket.profile import synthesize
 
-    groups = _discover_corpus_sources(corpus_dir)
+    groups, warnings = _discover_corpus_sources(corpus_dir)
     backend = get_backend()
 
     raw_inserted = 0
@@ -220,6 +230,7 @@ def _run_pipeline(
         "raw_items_inserted": raw_inserted,
         "facts_created": facts_created,
         "mentions_seen": len(mentions),
+        "warnings": warnings,
     }
 
 
@@ -230,9 +241,11 @@ def _run_pipeline(
 
 def _cmd_ingest(args: argparse.Namespace, store: Store) -> int:
     path = Path(args.path)
-    items = _ingest_source(path)
+    items, warnings = _ingest_source(path)
     inserted = store.add_raw_items(items)
     print(f"ingested {inserted} new raw item(s) from {path} ({len(items)} total in source)")
+    for w in warnings:
+        print(f"WARNING: {w}", file=sys.stderr)
     return 0
 
 
@@ -270,6 +283,8 @@ def _cmd_pipeline_run(
         profile_model=profile_model,
     )
     print(json.dumps(summary, indent=2))
+    for w in summary.get("warnings", []):
+        print(f"WARNING: {w}", file=sys.stderr)
     return 0
 
 
