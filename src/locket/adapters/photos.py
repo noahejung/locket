@@ -16,7 +16,6 @@ from pathlib import Path
 from PIL import ExifTags, Image
 from pillow_heif import register_heif_opener
 
-from locket.adapters.base import register
 from locket.models import RawItem, SourceKind
 
 register_heif_opener()
@@ -177,6 +176,3 @@ def parse_photos(
 def _warn(warnings: list[str] | None, message: str) -> None:
     if warnings is not None:
         warnings.append(message)
-
-
-register("dir:photos", parse_photos)

@@ -15,7 +15,6 @@ from pathlib import Path
 
 from lxml import etree
 
-from locket.adapters.base import register
 from locket.models import RawItem, SourceKind
 
 _SMS_DIRECTION = {"1": "received", "2": "sent"}
@@ -113,6 +112,3 @@ def parse_sms_xml(path: Path, *, warnings: list[str] | None = None) -> Iterator[
         elem.clear()
         if item is not None:
             yield item
-
-
-register(".xml", parse_sms_xml)

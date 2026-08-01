@@ -14,7 +14,6 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
-from locket.adapters.base import register
 from locket.models import RawItem, SourceKind
 
 _LRM = re.compile(r"^[‎‏]+")
@@ -142,6 +141,3 @@ def parse_whatsapp(
             yield _split_pending(pending)
     if unmatched and warnings is not None:
         warnings.append(f"{unmatched} unmatched line(s) in {path} could not be parsed as a message header")
-
-
-register(".txt", parse_whatsapp)

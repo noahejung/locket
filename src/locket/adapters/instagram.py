@@ -15,7 +15,6 @@ from typing import Any
 
 import ftfy
 
-from locket.adapters.base import register
 from locket.models import RawItem, SourceKind
 
 
@@ -62,6 +61,3 @@ def parse_instagram_thread(thread_dir: Path) -> Iterator[RawItem]:
             media_path=media_path,
             thread=thread_name,
         )
-
-
-register("dir:inbox", parse_instagram_thread)
