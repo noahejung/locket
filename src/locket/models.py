@@ -31,6 +31,24 @@ class FactKind(StrEnum):
     preference = "preference"
 
 
+def _is_unsafe_media_path(path: str) -> bool:
+    """Absolute paths and `..` traversal components are never a legitimate media_path --
+    every adapter's contract is "a relative path inside the corpus dir" (see photos.py's
+    `str(path.relative_to(root))`). A chat adapter's media_path is attacker-influenceable
+    text (e.g. an instruction-shaped `<attached: ../../x>` message); rejecting both shapes
+    here, at the single choke point every adapter's RawItem construction funnels through,
+    is defense-in-depth for a future "open the original attachment" feature that would
+    otherwise inherit path traversal for free (`Path("/safe") / "/abs"` silently discards
+    the left operand). Checked as plain strings, not via pathlib, since the value can use
+    either slash style regardless of which OS locket itself runs on."""
+    normalized = path.replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("~"):
+        return True
+    if len(path) >= 2 and path[1] == ":" and path[0].isalpha():  # Windows drive letter, e.g. "C:\x"
+        return True
+    return ".." in normalized.split("/")
+
+
 class RawItem(BaseModel):
     id: str  # deterministic: sha256 of (source, native identity fields)[:16]
     source: SourceKind
@@ -64,6 +82,14 @@ class RawItem(BaseModel):
         meta = dict(meta or {})
         if thread is not None:
             meta["thread"] = thread
+        if media_path is not None and _is_unsafe_media_path(media_path):
+            # Never silently discard the mention -- fold it back into the visible text as
+            # inert content (matching fix-wave-1 item 2's "untrusted data, not
+            # instructions" framing) rather than a media_path a future filesystem-join
+            # could traverse with.
+            note = f"[unsafe media path rejected: {media_path!r}]"
+            text = f"{text}\n{note}" if text else note
+            media_path = None
         identity = "|".join(
             [
                 str(source),

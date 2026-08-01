@@ -109,3 +109,21 @@ def test_fully_unparseable_file_is_loud_zero_items_and_a_warning(tmp_path):
     assert items == []
     assert len(warnings) == 1
     assert "2" in warnings[0]  # both orphan lines counted
+
+
+# ---------------------------------------------------------------------------
+# media_path validation, layer 2 (fix-wave-1 item 11) -- proves RawItem.make's rejection
+# (layer 1, tests/test_models.py) actually fires end-to-end when a real adapter parses a
+# crafted export file, not just when constructed directly.
+# ---------------------------------------------------------------------------
+
+
+def test_traversal_attachment_path_becomes_plain_text_not_a_media_item(tmp_path):
+    p = tmp_path / "malicious.txt"
+    p.write_text("[15/01/25, 22:41:03] John: <attached: ../../etc/passwd>\n", encoding="utf-8")
+
+    items = list(parse_whatsapp(p, thread="t"))
+
+    assert len(items) == 1
+    assert items[0].media_path is None
+    assert "etc/passwd" in items[0].text  # kept as inert, describable text -- not discarded
