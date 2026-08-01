@@ -85,13 +85,19 @@ def extract_and_persist(
     caller (cli.py's `_run_pipeline`) supply an already-filtered subset (e.g. excluding
     windows a prior run already extracted) without this module needing to know anything
     about idempotency watermarking itself.
+
+    Embeds every fact statement from this call in ONE embed_docs batch (fix-wave-2 item 5)
+    instead of one embed_docs([statement]) call per fact -- both prior copies of this logic
+    (cli.py's _run_pipeline, evals/extraction_eval.py's run_extraction_pipeline) made a
+    separate model call per fact before this module unified them.
     """
     backend = get_backend()
     extracted = extract_batch(items, model=model, windows_override=windows_override)
+    if not extracted:
+        return []
 
-    out: list[tuple[FactRow, list[str]]] = []
-    for extracted_fact, provenance in extracted:
-        fact = Fact(
+    facts = [
+        Fact(
             kind=extracted_fact.kind,
             statement=extracted_fact.statement,
             confidence=extracted_fact.confidence,
@@ -100,7 +106,12 @@ def extract_and_persist(
             happened_at=extracted_fact.happened_at,
             provenance=provenance,
         )
-        embedding = backend.embed_docs([fact.statement])[0]
+        for extracted_fact, provenance in extracted
+    ]
+    embeddings = backend.embed_docs([fact.statement for fact in facts])
+
+    out: list[tuple[FactRow, list[str]]] = []
+    for (extracted_fact, _provenance), fact, embedding in zip(extracted, facts, embeddings, strict=True):
         fact_id = store.add_fact(fact, embedding)
         row = FactRow(
             id=fact_id,
