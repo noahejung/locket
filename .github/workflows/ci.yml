@@ -1,5 +1,7 @@
 name: ci
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -7,6 +9,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --group dev
+      # PYSEC-2026-2447 (diskcache 5.6.3, transitive via ragas, dev-only): pickle-RCE needs
+      # local write access to the cache dir -- not attacker-reachable from anything this repo
+      # runs. PYSEC-2026-3046 (ragas 0.4.3): SSRF in ragas.metrics.multi_modal_faithfulness,
+      # a metric this codebase never imports (evals/rag_eval.py only imports
+      # ragas.metrics.collections.{Faithfulness,AnswerRelevancy,ContextPrecisionWithReference}
+      # -- confirmed unreachable, security audit 2026-07-31). Both pinned by ID, not blanket-
+      # ignored, so a NEW advisory on either package (or any other dependency) still fails CI.
+      - run: uv run --with pip-audit pip-audit --ignore-vuln PYSEC-2026-2447 --ignore-vuln PYSEC-2026-3046
       - run: uv run ruff check src tests evals corpusgen
       - run: uv run pytest -x -q
 
