@@ -18,6 +18,7 @@ of the five sections):
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from functools import cache
 from typing import Any
 
@@ -102,8 +103,12 @@ def synthesize(store: Store, *, model: Any | None = None) -> str:
     """Render the fact store into a five-section markdown profile and persist a new
     versioned row -- unless the fact count is unchanged since the latest saved profile, in
     which case this is a no-op and the existing body is returned as-is (no duplicate
-    version row, no wasted model calls)."""
-    all_facts = store.list_facts(limit=100_000)
+    version row, no wasted model calls). Excludes facts already superseded/expired as of
+    now (fix-wave-1 item 9) -- no include_expired escape hatch here, "the profile of you"
+    is always as-of now. A fact expiring between builds legitimately changes fact_count, so
+    it naturally triggers a fresh version rather than being silently missed by the no-op
+    check above."""
+    all_facts = store.list_facts(limit=100_000, valid_at=datetime.now(UTC))
     fact_count = len(all_facts)
 
     latest = store.get_latest_profile()

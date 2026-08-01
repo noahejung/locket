@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime
 
 import pytest
 
@@ -205,6 +206,22 @@ def test_search_memories_time_range_filter(store):
     assert out_of_range == []
 
 
+def test_search_memories_excludes_expired_facts_by_default_but_include_expired_returns_them(store):
+    """Bi-temporal validity wired into the read path (fix-wave-1 item 9): a fact expired in
+    the past must disappear from a default search (valid_at=now()) but still come back with
+    include_expired=True -- the escape hatch this tool gets per the dispatch."""
+    _entity_id, fact_id = _seed_dance_fact(store)
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+    mcp = build_server(store)
+
+    default_results = _call(mcp, "search_memories", {"query": "who is on the dance team"})
+    assert default_results == []
+
+    included = _call(mcp, "search_memories", {"query": "who is on the dance team", "include_expired": True})
+    assert len(included) == 1
+    assert included[0]["statement"] == "Sarah Kovacs is Noah's dance teammate"
+
+
 # ---------------------------------------------------------------------------
 # answer_question
 # ---------------------------------------------------------------------------
@@ -236,6 +253,22 @@ def test_answer_question_no_citation_returns_empty_facts_list(store):
 
     assert result["facts"] == []
     assert "enough information" in result["answer"]
+
+
+def test_answer_question_excludes_expired_facts_from_retrieval_context(store):
+    """No include_expired escape hatch on this tool per the dispatch -- always as-of now.
+    The expired fact must never even reach the synthesis prompt as candidate context."""
+    _entity_id, fact_id = _seed_dance_fact(store)
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+    decompose = _FakeDecomposeModel(["Sarah dance teammate"])
+    synthesize = _FakeSynthesizeModel("I don't have enough information to answer that.")
+    mcp = build_server(store, decompose_model=decompose, synthesize_model=synthesize)
+
+    result = _call(mcp, "answer_question", {"question": "Who is on my dance team?"})
+
+    assert result["facts"] == []
+    assert synthesize.calls
+    assert "dance teammate" not in synthesize.calls[0]  # expired fact never entered the prompt
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +336,26 @@ def test_query_timeline_empty_range_gives_empty_list(store):
     assert results == []
 
 
+def test_query_timeline_excludes_expired_facts_by_default_but_include_expired_returns_them(store):
+    backend = get_backend()
+    fact = Fact(
+        kind=FactKind.event, statement="Trip to Budapest", confidence=0.9, happened_at="2024-08-01",
+        provenance=["r1"],
+    )
+    fact_id = store.add_fact(fact, backend.embed_docs([fact.statement])[0])
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+    mcp = build_server(store)
+
+    default_results = _call(mcp, "query_timeline", {"start": "2024-01-01", "end": "2024-12-31"})
+    assert default_results == []
+
+    included = _call(
+        mcp, "query_timeline", {"start": "2024-01-01", "end": "2024-12-31", "include_expired": True}
+    )
+    assert len(included) == 1
+    assert included[0]["statement"] == "Trip to Budapest"
+
+
 # ---------------------------------------------------------------------------
 # get_person / list_people
 # ---------------------------------------------------------------------------
@@ -327,6 +380,19 @@ def test_get_person_not_found(store):
     assert card["found"] is False
 
 
+def test_get_person_excludes_expired_facts_no_escape_hatch(store):
+    """No include_expired escape hatch on this tool per the dispatch -- always as-of now."""
+    entity_id, fact_id = _seed_dance_fact(store)
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+    mcp = build_server(store)
+
+    card = _call(mcp, "get_person", {"name": "Sarah Kovacs"})
+
+    assert card["found"] is True
+    assert card["id"] == entity_id
+    assert card["facts"] == []
+
+
 def test_list_people_reports_fact_counts(store):
     _seed_dance_fact(store)
     backend = get_backend()
@@ -338,3 +404,13 @@ def test_list_people_reports_fact_counts(store):
     assert len(people) == 1  # place entities excluded
     assert people[0]["name"] == "Sarah Kovacs"
     assert people[0]["fact_count"] == 1
+
+
+def test_list_people_fact_count_excludes_expired_facts(store):
+    _entity_id, fact_id = _seed_dance_fact(store)
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+    mcp = build_server(store)
+
+    people = _call(mcp, "list_people")
+
+    assert people[0]["fact_count"] == 0

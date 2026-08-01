@@ -275,6 +275,36 @@ def test_list_facts_filters_by_kind_and_orders_by_created_at(store):
     assert [r.id for r in only_habit] == [habit_id]
 
 
+def test_list_facts_valid_at_excludes_expired_facts(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(kind=FactKind.habit, statement="John runs every morning", confidence=0.8, provenance=[raw.id])
+    fact_id = store.add_fact(fact, embedding=_vec(1.0))
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+
+    before_expiry = datetime(2019, 1, 1, tzinfo=UTC)
+    after_expiry = datetime(2025, 1, 1, tzinfo=UTC)
+    assert fact_id in [r.id for r in store.list_facts(valid_at=before_expiry)]
+    assert fact_id not in [r.id for r in store.list_facts(valid_at=after_expiry)]
+    assert fact_id in [r.id for r in store.list_facts()]  # no valid_at -> unfiltered
+
+
+def test_get_facts_for_entity_valid_at_excludes_expired_facts(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    entity_id = store.upsert_entity("John", "person", _vec(1.0))
+    fact = Fact(
+        kind=FactKind.person, statement="John works at Acme", confidence=0.9,
+        entity_ids=[entity_id], provenance=[raw.id],
+    )
+    fact_id = store.add_fact(fact, embedding=_vec(1.0))
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+
+    after_expiry = datetime(2025, 1, 1, tzinfo=UTC)
+    assert store.get_facts_for_entity(entity_id, valid_at=after_expiry) == []
+    assert len(store.get_facts_for_entity(entity_id)) == 1  # no valid_at -> unfiltered
+
+
 def test_extracted_window_hashes_round_trip(store):
     assert store.get_extracted_window_hashes(["h1", "h2"]) == set()
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import UTC, datetime
 
 import pytest
 
@@ -169,6 +170,22 @@ def test_empty_store_still_produces_all_sections_with_placeholder_text(store):
     body = synthesize(store, model=model)
     for section in SECTION_ORDER:
         assert f"## {section}" in body
+
+
+def test_expired_fact_is_excluded_from_the_synthesized_profile(store):
+    """Bi-temporal validity wired into profile synthesis (fix-wave-1 item 9): an expired
+    fact must not appear in the rendered profile -- no include_expired escape hatch here
+    per the dispatch (profile synthesis is always as-of now)."""
+    fact_ids = _make_seeded_store(store)
+    habit_id = fact_ids[str(FactKind.habit)]
+    store.update_fact(habit_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+    model = _EchoRenderModel()
+
+    body = synthesize(store, model=model)
+
+    habits_section = body.split("## Habits", 1)[1].split("## ", 1)[0]
+    assert habit_id[:8] not in habits_section
+    assert "_Nothing extracted for this section yet._" in habits_section
 
 
 # ---------------------------------------------------------------------------

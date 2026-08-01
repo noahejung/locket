@@ -263,14 +263,21 @@ class Store:
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
 
-    def list_facts(self, *, kinds: list[str] | None = None, limit: int = 1000) -> list[FactRow]:
+    def list_facts(
+        self, *, kinds: list[str] | None = None, limit: int = 1000, valid_at: datetime | None = None
+    ) -> list[FactRow]:
         """Plain listing (no vector query) -- used by the MCP server's timeline tool and
-        profile synthesis, neither of which needs semantic ranking."""
+        profile synthesis, neither of which needs semantic ranking. `valid_at`, if given,
+        excludes facts already expired as of that instant -- same "as-of" semantics as
+        search_facts's own `valid_at` filter."""
         clauses = []
         params: list[Any] = []
         if kinds:
             clauses.append("kind = ANY(%s)")
             params.append(kinds)
+        if valid_at is not None:
+            clauses.append("(invalid_at IS NULL OR invalid_at > %s)")
+            params.append(valid_at)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"""
             SELECT {", ".join(_FACT_COLUMNS)}
@@ -285,16 +292,23 @@ class Store:
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
 
-    def get_facts_for_entity(self, entity_id: str) -> list[FactRow]:
+    def get_facts_for_entity(self, entity_id: str, *, valid_at: datetime | None = None) -> list[FactRow]:
+        """`valid_at`, if given, excludes facts already expired as of that instant -- same
+        "as-of" semantics as search_facts/list_facts's own `valid_at` filter."""
+        clauses = ["%s = ANY(entity_ids)"]
+        params: list[Any] = [entity_id]
+        if valid_at is not None:
+            clauses.append("(invalid_at IS NULL OR invalid_at > %s)")
+            params.append(valid_at)
         with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT {", ".join(_FACT_COLUMNS)}
                 FROM facts
-                WHERE %s = ANY(entity_ids)
+                WHERE {" AND ".join(clauses)}
                 ORDER BY created_at
                 """,
-                (entity_id,),
+                params,
             )
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
