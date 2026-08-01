@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from locket.models import Fact, FactKind, RawItem, SourceKind
-from locket.store import Store
+from locket.store import ConfirmQueueStats, Store
 
 pytestmark = pytest.mark.db
 
@@ -527,3 +527,97 @@ def test_save_profile_and_get_latest_profile(store):
     latest = store.get_latest_profile()
     assert latest.id == second_id
     assert latest.body == "# Profile v2"
+
+
+# ---------------------------------------------------------------------------
+# stats (`locket stats`, metrics.md §1/§5) -- one aggregate query per method, same
+# "no N+1, one round-trip for the whole batch" pattern as fact_counts_by_entity above.
+# ---------------------------------------------------------------------------
+
+
+def test_raw_item_counts_by_source(store):
+    store.add_raw_items([_raw(0), _raw(1)])  # both whatsapp, via the _raw() helper above
+    sms_item = RawItem.make(
+        source=SourceKind.sms, ts=datetime(2025, 1, 1, tzinfo=UTC), sender="John", text="hi", thread="t"
+    )
+    store.add_raw_items([sms_item])
+
+    assert store.raw_item_counts_by_source() == {"whatsapp": 2, "sms": 1}
+
+
+def test_raw_item_counts_by_source_empty_table(store):
+    assert store.raw_item_counts_by_source() == {}
+
+
+def test_fact_stats_totals_and_per_kind_breakdown_in_one_query(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    pref = Fact(kind=FactKind.preference, statement="John likes hiking", confidence=0.8, provenance=[raw.id])
+    habit1 = Fact(kind=FactKind.habit, statement="John runs every morning", confidence=0.6, provenance=[raw.id])
+    habit2 = Fact(kind=FactKind.habit, statement="John does yoga on Tuesdays", confidence=0.8, provenance=[raw.id])
+    for f in (pref, habit1, habit2):
+        store.add_fact(f, _vec(1.0))
+
+    stats = store.fact_stats()
+
+    assert stats.total == 3
+    assert stats.mean_confidence == pytest.approx((0.8 + 0.6 + 0.8) / 3)
+    assert stats.by_kind["preference"].count == 1
+    assert stats.by_kind["preference"].mean_confidence == pytest.approx(0.8)
+    assert stats.by_kind["habit"].count == 2
+    assert stats.by_kind["habit"].mean_confidence == pytest.approx(0.7)
+
+
+def test_fact_stats_empty_facts_table(store):
+    """ROLLUP over zero rows yields zero result rows (same as a plain GROUP BY would) --
+    fact_stats must still return sane zero-valued defaults, not raise or return garbage."""
+    stats = store.fact_stats()
+
+    assert stats.total == 0
+    assert stats.mean_confidence == 0.0
+    assert stats.by_kind == {}
+
+
+def test_entity_count(store):
+    assert store.entity_count() == 0
+    store.upsert_entity("John", "person", _vec(1.0))
+    store.upsert_entity("Boston", "place", _vec(2.0))
+    assert store.entity_count() == 2
+
+
+def test_confirm_queue_stats_depth_and_oldest_created_at(store):
+    john = store.upsert_entity("John Doe", "person", _vec(1.0))
+    jane = store.upsert_entity("Jane Doe", "person", _vec(2.0))
+
+    assert store.confirm_queue_stats() == ConfirmQueueStats(depth=0, oldest_created_at=None)
+
+    store.add_merge_proposal("J", john, evidence="e1", score=0.5)
+    store.add_merge_proposal("J", jane, evidence="e2", score=0.5)
+
+    queue = store.confirm_queue_stats()
+    assert queue.depth == 2
+    assert queue.oldest_created_at is not None
+    assert queue.oldest_created_at.tzinfo is not None  # timestamptz -- must round-trip aware
+
+
+def test_confirm_queue_stats_only_counts_pending_not_resolved(store):
+    john = store.upsert_entity("John Doe", "person", _vec(1.0))
+    proposal_id = store.add_merge_proposal("J", john, evidence="e1", score=0.5)
+    store.resolve_merge_proposal(proposal_id, accept=True)
+
+    assert store.confirm_queue_stats().depth == 0
+
+
+def test_fact_history_event_counts(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(kind=FactKind.habit, statement="Sarah runs", confidence=0.7, provenance=[raw.id])
+    fact_id = store.add_fact(fact, _vec(1.0))
+    store.update_fact(fact_id, confidence=0.9)
+    store.update_fact(fact_id, invalid_at=datetime(2025, 6, 1, tzinfo=UTC))
+
+    assert store.fact_history_event_counts() == {"ADD": 1, "UPDATE": 1, "EXPIRE": 1}
+
+
+def test_fact_history_event_counts_empty(store):
+    assert store.fact_history_event_counts() == {}

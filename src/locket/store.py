@@ -110,6 +110,37 @@ class MergeProposal:
     status: str = "pending"
 
 
+@dataclass
+class KindFactStats:
+    """One fact-kind's slice of FactStats.by_kind below."""
+
+    count: int
+    mean_confidence: float
+
+
+@dataclass
+class FactStats:
+    """`locket stats`'s facts-table view (metrics.md §1: "facts by kind + total + mean
+    confidence") -- total and mean_confidence are computed over every fact regardless of
+    kind; by_kind carries the same two numbers per kind. See Store.fact_stats."""
+
+    total: int
+    mean_confidence: float
+    by_kind: dict[str, KindFactStats]
+
+
+@dataclass
+class ConfirmQueueStats:
+    """`locket stats`'s merge_proposals view (metrics.md §1: "confirm-queue depth + age").
+    `oldest_created_at` is the raw timestamp, not a pre-computed age -- diffing against
+    wall-clock now() is a print-time concern (cli.py), not something to bake into a value
+    this method returns, which would make the value itself non-deterministic/hard to assert
+    on in a test regardless of when the test happens to run."""
+
+    depth: int
+    oldest_created_at: datetime | None
+
+
 def _row_to_fact(row: tuple) -> FactRow:
     (id_, kind, statement, confidence, entity_ids, provenance, happened_at, valid_at, invalid_at) = row
     return FactRow(
@@ -568,6 +599,66 @@ class Store:
         if row is None:
             return None
         return ProfileRow(id=str(row[0]), body=row[1], fact_count=row[2], created_at=row[3])
+
+    # ---- stats (`locket stats`, metrics.md §1/§5) ------------------------------------
+
+    def raw_item_counts_by_source(self) -> dict[str, int]:
+        """One aggregate query -- raw_items row count per source (metrics.md §1: "raw items
+        ingested, per source"). A source with zero rows is absent, not present with 0."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("SELECT source, count(*) FROM raw_items GROUP BY source")
+            rows = cur.fetchall()
+        return {source: count for source, count in rows}
+
+    def fact_stats(self) -> FactStats:
+        """One query for the whole facts-table view (fix-wave-2 item 6's
+        fact_counts_by_entity "no N+1, one query for the batch" pattern, applied here to
+        "one query for the per-kind breakdown AND the grand total"): `GROUP BY ROLLUP
+        (kind)` returns one row per kind plus one extra row with kind=NULL carrying the
+        count/avg over every fact regardless of kind, in the SAME round-trip a plain `GROUP
+        BY kind` would already need -- no second query for the totals. Returns
+        total=0/mean_confidence=0.0/by_kind={} on an empty facts table (ROLLUP over zero
+        rows yields zero result rows, same as a plain GROUP BY would)."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("SELECT kind, count(*), avg(confidence) FROM facts GROUP BY ROLLUP (kind)")
+            rows = cur.fetchall()
+        by_kind: dict[str, KindFactStats] = {}
+        total = 0
+        mean_confidence = 0.0
+        for kind, count, avg_confidence in rows:
+            if kind is None:  # the ROLLUP grand-total row -- always present when `rows` is non-empty
+                total = count
+                mean_confidence = float(avg_confidence)
+            else:
+                by_kind[kind] = KindFactStats(count=count, mean_confidence=float(avg_confidence))
+        return FactStats(total=total, mean_confidence=mean_confidence, by_kind=by_kind)
+
+    def entity_count(self) -> int:
+        """metrics.md §1's "entities count" -- trivial, but kept as its own method for the
+        same reason every other stats read here is: cli.py's `locket stats` handler should
+        never write raw SQL of its own (store.py stays the only module that talks to
+        Postgres)."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM entities")
+            (count,) = cur.fetchone()
+        return count
+
+    def confirm_queue_stats(self) -> ConfirmQueueStats:
+        """metrics.md §1's "confirm-queue depth + age" -- one aggregate query over pending
+        merge_proposals. depth=0/oldest_created_at=None when the queue is empty (min() over
+        zero rows is NULL, not an error)."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("SELECT count(*), min(created_at) FROM merge_proposals WHERE status = 'pending'")
+            depth, oldest_created_at = cur.fetchone()
+        return ConfirmQueueStats(depth=depth, oldest_created_at=oldest_created_at)
+
+    def fact_history_event_counts(self) -> dict[str, int]:
+        """One aggregate query -- ADD/UPDATE/EXPIRE counts (metrics.md §1: "fact_history
+        event counts"). An event with zero rows is absent, not present with 0."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("SELECT event, count(*) FROM fact_history GROUP BY event")
+            rows = cur.fetchall()
+        return {event: count for event, count in rows}
 
 
 def _jsonable(value: Any) -> Any:
