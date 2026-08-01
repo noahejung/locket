@@ -331,6 +331,34 @@ class Store:
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
 
+    def fact_counts_by_entity(
+        self, entity_ids: list[str], *, valid_at: datetime | None = None
+    ) -> dict[str, int]:
+        """How many (optionally, non-expired-as-of-`valid_at`) facts mention each of
+        `entity_ids` -- one aggregate query for the whole batch (fix-wave-2 item 6), not
+        one get_facts_for_entity call per id (the N+1 mcp_server.list_people had). An
+        entity with zero matching facts is simply absent from the returned dict, not
+        present with value 0 -- callers should `.get(id, 0)`."""
+        if not entity_ids:
+            return {}
+        clauses = ["eid = ANY(%s)"]
+        params: list[Any] = [entity_ids]
+        if valid_at is not None:
+            clauses.append("(invalid_at IS NULL OR invalid_at > %s)")
+            params.append(valid_at)
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT eid::text, count(*)
+                FROM facts, unnest(entity_ids) AS eid
+                WHERE {" AND ".join(clauses)}
+                GROUP BY eid
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+        return {eid: count for eid, count in rows}
+
     # ---- extracted_windows (pipeline-run idempotency watermark, fix-wave-1 item 8b) ---
 
     def get_extracted_window_hashes(self, hashes: list[str]) -> set[str]:

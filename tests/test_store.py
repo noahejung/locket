@@ -348,6 +348,45 @@ def test_list_facts_valid_at_excludes_expired_facts(store):
     assert fact_id in [r.id for r in store.list_facts()]  # no valid_at -> unfiltered
 
 
+def test_fact_counts_by_entity_aggregates_in_one_query(store):
+    """Fix-wave-2 item 6: mcp_server.list_people's N+1 (one get_facts_for_entity call per
+    person) replaced by this single aggregate query over the whole batch of entity ids."""
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    john = store.upsert_entity("John", "person", _vec(1.0))
+    sarah = store.upsert_entity("Sarah", "person", _vec(2.0))
+    lonely = store.upsert_entity("Lonely", "person", _vec(3.0))  # zero facts
+
+    fact1 = Fact(kind=FactKind.person, statement="John works at Acme", confidence=0.9, entity_ids=[john], provenance=[raw.id])
+    fact2 = Fact(kind=FactKind.habit, statement="John runs every morning", confidence=0.9, entity_ids=[john], provenance=[raw.id])
+    fact3 = Fact(kind=FactKind.habit, statement="Sarah does yoga", confidence=0.9, entity_ids=[sarah], provenance=[raw.id])
+    for f in (fact1, fact2, fact3):
+        store.add_fact(f, _vec(1.0))
+
+    counts = store.fact_counts_by_entity([john, sarah, lonely])
+
+    assert counts[john] == 2
+    assert counts[sarah] == 1
+    assert lonely not in counts  # absent, not zero -- callers .get(id, 0)
+
+
+def test_fact_counts_by_entity_valid_at_excludes_expired_facts(store):
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    john = store.upsert_entity("John", "person", _vec(1.0))
+    fact = Fact(kind=FactKind.person, statement="John works at Acme", confidence=0.9, entity_ids=[john], provenance=[raw.id])
+    fact_id = store.add_fact(fact, _vec(1.0))
+    store.update_fact(fact_id, invalid_at=datetime(2020, 1, 1, tzinfo=UTC))
+
+    after_expiry = datetime(2025, 1, 1, tzinfo=UTC)
+    assert store.fact_counts_by_entity([john], valid_at=after_expiry).get(john, 0) == 0
+    assert store.fact_counts_by_entity([john]).get(john, 0) == 1  # no valid_at -> unfiltered
+
+
+def test_fact_counts_by_entity_empty_input_short_circuits(store):
+    assert store.fact_counts_by_entity([]) == {}
+
+
 def test_get_facts_for_entity_valid_at_excludes_expired_facts(store):
     raw = _raw(0)
     store.add_raw_items([raw])
