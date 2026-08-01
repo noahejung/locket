@@ -118,6 +118,23 @@ def test_fully_unparseable_file_is_loud_zero_items_and_a_warning(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_android_file_attached_marker_sets_media_path(tmp_path):
+    # The android "(file attached)" branch had zero coverage before this test -- added
+    # alongside fix-wave-2 item 9's character-class tightening (see _ATTACH's comment) to
+    # lock in the legitimate-filename case the tightened regex must keep matching.
+    p = tmp_path / "attach.txt"
+    p.write_text(
+        "1/15/25, 3:15 PM - John: IMG-20250115-WA0002.jpg (file attached)\n",
+        encoding="utf-8",
+    )
+
+    items = list(parse_whatsapp(p, thread="t"))
+
+    assert len(items) == 1
+    assert items[0].media_path == "IMG-20250115-WA0002.jpg"
+    assert items[0].text is None
+
+
 def test_traversal_attachment_path_becomes_plain_text_not_a_media_item(tmp_path):
     p = tmp_path / "malicious.txt"
     p.write_text("[15/01/25, 22:41:03] John: <attached: ../../etc/passwd>\n", encoding="utf-8")

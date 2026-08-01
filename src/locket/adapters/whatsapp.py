@@ -28,8 +28,18 @@ _BRACKET = re.compile(
     r"^\[(?P<d>\d{1,2})/(?P<m>\d{1,2})/(?P<y>\d{2,4}), "
     r"(?P<h>\d{1,2}):(?P<min>\d{2})(?::(?P<s>\d{2}))?\]\s"
 )
+# android branch's class deliberately excludes "." (fix-wave-2 item 9, security audit LOW
+# #5): the old `[\w.\- ]+\.\w+` let the leading `+` match through literal dots too, so it
+# overlapped with the required trailing `\.\w+` -- for a non-matching suffix, the engine
+# could retry the split at every prior dot in the string, a polynomial (not exponential)
+# backtracking blowup bounded only by WhatsApp's message-length ceiling. Excluding "." from
+# the class removes the overlap: the `+` can only ever stop at the position immediately
+# before a literal dot, so there is exactly one candidate split point per dot, no retrying.
+# Trade-off: a filename with more than one dot in its name portion (e.g. "photo.v2.jpg")
+# no longer matches at all -- accepted per the audit's own suggested fix, since real
+# WhatsApp android export filenames are single-dot in every observed case.
 _ATTACH = re.compile(
-    r"^[‎‏]*(?:<attached:\s*(?P<ios>[^>]+)>|(?P<android>[\w.\- ]+\.\w+)\s\(file attached\))"
+    r"^[‎‏]*(?:<attached:\s*(?P<ios>[^>]+)>|(?P<android>[\w\- ]+\.\w+)\s\(file attached\))"
 )
 
 
