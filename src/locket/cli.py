@@ -26,11 +26,11 @@ from locket.adapters.photos import parse_photos
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
 from locket.config import Settings
-from locket.embeddings import get_backend
 from locket.extraction.chunking import windows
-from locket.extraction.graph import extract_batch, window_hash
+from locket.extraction.graph import window_hash
 from locket.llm import resolve_backend
-from locket.models import Fact, RawItem
+from locket.models import RawItem
+from locket.pipeline import discover_corpus_sources, extract_and_persist
 from locket.resolution import pending_confirmations, resolve
 from locket.store import Store
 
@@ -64,43 +64,6 @@ def _ingest_source(path: Path) -> tuple[list[RawItem], list[str]]:
     if suffix == ".xml":
         return list(parse_sms_xml(path, warnings=warnings)), warnings
     raise ValueError(f"don't know how to ingest {path} (expected .txt, .xml, or a directory)")
-
-
-def _discover_corpus_sources(corpus_dir: Path) -> tuple[list[tuple[str, list[RawItem]]], list[str]]:
-    """(label, items) pairs, one per conversation/source, kept separate so windows() (inside
-    extract_batch) never mixes unrelated threads -- mirrors evals/extraction_eval.py's
-    _demo_sources, generalized to walk whatever files exist under corpus_dir rather than
-    hardcoding the demo corpus's exact filenames (a real corpus's whatsapp/ dir won't be
-    named team.txt/sarah.txt). Second element: every adapter parse warning collected across
-    the whole corpus (see _ingest_source)."""
-    groups: list[tuple[str, list[RawItem]]] = []
-    warnings: list[str] = []
-
-    wa_dir = corpus_dir / "whatsapp"
-    if wa_dir.is_dir():
-        for txt_path in sorted(wa_dir.glob("*.txt")):
-            groups.append(
-                (
-                    f"whatsapp:{txt_path.stem}",
-                    list(parse_whatsapp(txt_path, thread=txt_path.stem, warnings=warnings)),
-                )
-            )
-
-    sms_dir = corpus_dir / "sms"
-    if sms_dir.is_dir():
-        for xml_path in sorted(sms_dir.glob("*.xml")):
-            groups.append((f"sms:{xml_path.stem}", list(parse_sms_xml(xml_path, warnings=warnings))))
-
-    ig_inbox = corpus_dir / "instagram" / "inbox"
-    if ig_inbox.is_dir():
-        for thread_dir in sorted(p for p in ig_inbox.iterdir() if p.is_dir()):
-            groups.append((f"instagram:{thread_dir.name}", list(parse_instagram_thread(thread_dir))))
-
-    photos_dir = corpus_dir / "photos"
-    if photos_dir.is_dir():
-        groups.append(("photos", list(parse_photos(photos_dir, warnings=warnings))))
-
-    return groups, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +148,7 @@ def _run_pipeline(
 ) -> dict[str, Any]:
     from locket.profile import synthesize
 
-    groups, warnings = _discover_corpus_sources(corpus_dir)
-    backend = get_backend()
+    groups, warnings = discover_corpus_sources(corpus_dir)
 
     raw_inserted = 0
     facts_created = 0
@@ -213,23 +175,12 @@ def _run_pipeline(
         pending_hashes = [h for h in hashes if h not in already_done]
         windows_skipped += len(hashes) - len(pending_hashes)
 
-        for extracted_fact, provenance in extract_batch(
-            items, model=extraction_model, windows_override=pending_windows
+        for row, subjects in extract_and_persist(
+            store, items, model=extraction_model, windows_override=pending_windows
         ):
-            fact = Fact(
-                kind=extracted_fact.kind,
-                statement=extracted_fact.statement,
-                confidence=extracted_fact.confidence,
-                subjects=extracted_fact.subjects,
-                place=extracted_fact.place,
-                happened_at=extracted_fact.happened_at,
-                provenance=provenance,
-            )
-            embedding = backend.embed_docs([fact.statement])[0]
-            fact_id = store.add_fact(fact, embedding)
             facts_created += 1
-            fact_subjects.append((fact_id, fact.subjects))
-            mentions.update(fact.subjects)
+            fact_subjects.append((row.id, subjects))
+            mentions.update(subjects)
 
         if pending_hashes:
             store.mark_windows_extracted(pending_hashes)

@@ -5,16 +5,13 @@ similarity floor (the plan's explicit "guard against regex-lucky nonsense"). Mat
 greedy bipartite: each gold fact consumes at most one extracted fact, so precision/recall
 counts never double-count a single extracted fact against two gold facts.
 
-Interim wiring note (mirrors Task 16's rag_eval.py note): no earlier task produces a
-combined end-to-end runner -- that arrives as Task 19's `locket pipeline run`. For now,
-`run_extraction_pipeline` assembles adapters -> extract_batch() -> store.add_fact()
-manually, per-source-file (never pooling all sources into one windows() call --
-chunking.windows() splits purely on time gaps, with no notion of "thread", so merging
-distinct conversations before windowing would let unrelated threads bleed into the same
-extraction window). Swap to the shared pipeline function when Task 19 lands.
-
-CLI (`locket eval extraction --json`) is NOT wired here -- cli.py doesn't exist until
-Task 19; this module's public functions are what that CLI will call.
+`run_extraction_pipeline` calls locket.pipeline's shared corpus-walk (discover_corpus_sources)
++ extract-and-persist (extract_and_persist) functions -- fix-wave-2 item 4. This module used
+to keep its own separate copy of both (a hardcoded whatsapp/sms/instagram-only walker plus a
+duplicate extract_batch -> store.add_fact loop) that could silently drift from cli.py's
+`pipeline run`; now there is exactly one implementation of that shared core. What stays
+unique to this module: no vision pre-pass, no idempotency watermark, no entity resolution,
+no profile synthesis -- `pipeline run`-only concerns this scoring harness doesn't need.
 """
 
 from __future__ import annotations
@@ -30,12 +27,9 @@ import yaml
 from pydantic import BaseModel
 from pydantic import Field as PydField
 
-from locket.adapters.instagram import parse_instagram_thread
-from locket.adapters.sms_xml import parse_sms_xml
-from locket.adapters.whatsapp import parse_whatsapp
 from locket.embeddings import get_backend
-from locket.extraction.graph import extract_batch
-from locket.models import Fact, FactKind
+from locket.models import FactKind
+from locket.pipeline import discover_corpus_sources, extract_and_persist
 from locket.store import FactRow, Store
 
 COSINE_FLOOR = 0.6
@@ -153,59 +147,19 @@ def score(
     )
 
 
-def _demo_sources(corpus_dir: Path) -> list[list[Any]]:
-    """Every RawItem group in the demo corpus, kept separate by conversation so windows()
-    (called inside extract_batch) never mixes unrelated threads."""
-    from locket.models import RawItem  # local import: type hint only, avoids a cycle risk
-
-    groups: list[list[RawItem]] = [
-        list(parse_whatsapp(corpus_dir / "whatsapp" / "team.txt", thread="team")),
-        list(parse_whatsapp(corpus_dir / "whatsapp" / "sarah.txt", thread="sarah")),
-        list(parse_sms_xml(corpus_dir / "sms" / "backup.xml")),
-    ]
-    ig_inbox = corpus_dir / "instagram" / "inbox"
-    if ig_inbox.is_dir():
-        for thread_dir in sorted(p for p in ig_inbox.iterdir() if p.is_dir()):
-            groups.append(list(parse_instagram_thread(thread_dir)))
-    return groups
-
-
 def run_extraction_pipeline(store: Store, corpus_dir: Path, *, model: Any | None = None) -> list[FactRow]:
-    """Ingests every demo_corpus text source, runs extraction per-thread, persists each
-    fact via store.add_fact, and returns the resulting FactRows (built locally from the
-    known fields rather than re-querying -- add_fact already returns everything needed)."""
-    backend = get_backend()
+    """Ingests every corpus source (locket.pipeline.discover_corpus_sources), runs
+    extraction per source group, and persists each fact via locket.pipeline.extract_and_persist
+    -- returns the resulting FactRows. See module docstring: this is the shared pipeline
+    core, not a separate copy of it."""
+    groups, _warnings = discover_corpus_sources(corpus_dir)
     rows: list[FactRow] = []
 
-    for items in _demo_sources(corpus_dir):
+    for _label, items in groups:
         if not items:
             continue
         store.add_raw_items(items)
-        for extracted_fact, provenance in extract_batch(items, model=model):
-            fact = Fact(
-                kind=extracted_fact.kind,
-                statement=extracted_fact.statement,
-                confidence=extracted_fact.confidence,
-                subjects=extracted_fact.subjects,
-                place=extracted_fact.place,
-                happened_at=extracted_fact.happened_at,
-                provenance=provenance,
-            )
-            embedding = backend.embed_docs([fact.statement])[0]
-            fact_id = store.add_fact(fact, embedding)
-            rows.append(
-                FactRow(
-                    id=fact_id,
-                    kind=str(fact.kind),
-                    statement=fact.statement,
-                    confidence=fact.confidence,
-                    entity_ids=fact.entity_ids,
-                    provenance=fact.provenance,
-                    happened_at=fact.happened_at,
-                    valid_at=None,
-                    invalid_at=None,
-                )
-            )
+        rows.extend(row for row, _subjects in extract_and_persist(store, items, model=model))
     return rows
 
 
