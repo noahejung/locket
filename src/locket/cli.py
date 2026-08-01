@@ -1,5 +1,5 @@
-"""locket CLI: `locket ingest / pipeline run / label-faces / resolve / eval / profile /
-stats / serve / serve-ui`.
+"""locket CLI: `locket ingest / pipeline run / pipeline retry-given-up / label-faces /
+resolve / eval / profile / stats / serve / serve-ui`.
 
 argparse only, no CLI framework dependency, per PLAN.md Task 19. Heavy-dependency imports
 (vision models, evals/extraction_eval.py, evals/rag_eval.py) are deferred to the function
@@ -149,14 +149,23 @@ def _run_pipeline(
     extraction_model: Any | None,
     resolve_model: Any | None,
     profile_model: Any | None,
+    retry_failed: bool = False,
 ) -> dict[str, Any]:
     from locket.profile import synthesize
+
+    # --retry-failed (fix-wave-3 follow-up to the 2026-08-01 catch-up review's MEDIUM
+    # finding): clear give-up rows BEFORE discovering pending windows below, so this same
+    # run re-attempts them like any other not-yet-done window -- same effect as running
+    # `pipeline retry-given-up` first, just inline. Global across the whole
+    # extracted_windows table, same as the standalone command (not scoped to corpus_dir).
+    given_up_cleared = store.clear_given_up_windows() if retry_failed else 0
 
     groups, warnings = discover_corpus_sources(corpus_dir)
 
     raw_inserted = 0
     facts_created = 0
-    windows_skipped = 0
+    windows_skipped_extracted = 0
+    windows_skipped_gave_up = 0
     windows_processed = 0
     retries = 0
     give_ups = 0
@@ -172,16 +181,19 @@ def _run_pipeline(
 
         raw_inserted += store.add_raw_items(items)
 
-        # Idempotency watermark (fix-wave-1 item 8b): skip windows a prior `pipeline run`
-        # already extracted -- computed here (not inside extract_batch) so window
-        # boundaries stay stable across runs; re-deriving windows() from a pruned item list
-        # could reshuffle them (gap/order-sensitive).
+        # Idempotency watermark (fix-wave-1 item 8b, outcome-split fix-wave-3): skip windows
+        # a prior `pipeline run` already reached a terminal state for (either outcome) --
+        # computed here (not inside extract_batch) so window boundaries stay stable across
+        # runs; re-deriving windows() from a pruned item list could reshuffle them
+        # (gap/order-sensitive). get_window_outcomes (not the older membership-only
+        # get_extracted_window_hashes) so the skip count below can be split by outcome.
         item_windows = windows(items)
         hashes = [window_hash(w) for w in item_windows]
-        already_done = store.get_extracted_window_hashes(hashes) if hashes else set()
-        pending_windows = [w for w, h in zip(item_windows, hashes, strict=True) if h not in already_done]
-        pending_hashes = [h for h in hashes if h not in already_done]
-        windows_skipped += len(hashes) - len(pending_hashes)
+        outcomes = store.get_window_outcomes(hashes) if hashes else {}
+        pending_windows = [w for w, h in zip(item_windows, hashes, strict=True) if h not in outcomes]
+        pending_hashes = [h for h in hashes if h not in outcomes]
+        windows_skipped_extracted += sum(1 for o in outcomes.values() if o == "extracted")
+        windows_skipped_gave_up += sum(1 for o in outcomes.values() if o == "gave_up")
         windows_processed += len(pending_windows)
 
         persisted = extract_and_persist(
@@ -195,8 +207,16 @@ def _run_pipeline(
         give_ups += persisted.give_ups
         escalations += persisted.escalations
 
-        if pending_hashes:
-            store.mark_windows_extracted(pending_hashes)
+        # Split pending_hashes by THIS run's outcome -- a give-up must be recorded with
+        # mark_windows_given_up (a distinct, later-retryable outcome), not
+        # mark_windows_extracted, or it becomes exactly as permanently/silently unretryable
+        # as the pre-fix version of this method made every give-up.
+        gave_up_now = set(persisted.given_up_window_hashes)
+        succeeded_hashes = [h for h in pending_hashes if h not in gave_up_now]
+        if succeeded_hashes:
+            store.mark_windows_extracted(succeeded_hashes)
+        if gave_up_now:
+            store.mark_windows_given_up(sorted(gave_up_now))
 
     if mentions:
         resolved = resolve(store, sorted(mentions), model=resolve_model)
@@ -212,8 +232,11 @@ def _run_pipeline(
         "raw_items_inserted": raw_inserted,
         "facts_created": facts_created,
         "mentions_seen": len(mentions),
-        "windows_skipped": windows_skipped,
+        "windows_skipped": windows_skipped_extracted + windows_skipped_gave_up,
+        "windows_skipped_extracted": windows_skipped_extracted,
+        "windows_skipped_gave_up": windows_skipped_gave_up,
         "windows_processed": windows_processed,
+        "given_up_cleared": given_up_cleared,
         "retries": retries,
         "give_ups": give_ups,
         "escalations": escalations,
@@ -279,6 +302,7 @@ def _cmd_pipeline_run(
         extraction_model=extraction_model,
         resolve_model=resolve_model,
         profile_model=profile_model,
+        retry_failed=args.retry_failed,
     )
     wall_seconds = time.monotonic() - started_at
     facts_added = store.fact_stats().total - facts_before
@@ -290,6 +314,8 @@ def _cmd_pipeline_run(
             model=model_name("extraction_default", settings),
             windows_processed=summary["windows_processed"],
             windows_skipped=summary["windows_skipped"],
+            windows_skipped_extracted=summary["windows_skipped_extracted"],
+            windows_skipped_gave_up=summary["windows_skipped_gave_up"],
             facts_added=facts_added,
             dedup_hits=summary["facts_created"] - facts_added,
             retries=summary["retries"],
@@ -302,6 +328,18 @@ def _cmd_pipeline_run(
     print(json.dumps(summary, indent=2))
     for w in summary.get("warnings", []):
         print(f"WARNING: {w}", file=sys.stderr)
+    return 0
+
+
+def _cmd_pipeline_retry_given_up(store: Store) -> int:
+    """The standalone escape hatch (fix-wave-3 follow-up to the 2026-08-01 catch-up
+    review's MEDIUM finding): clears every extracted_windows row with outcome='gave_up' --
+    successfully-extracted rows are untouched -- so the next `pipeline run` re-attempts
+    exactly those windows instead of skipping them forever. `pipeline run --retry-failed`
+    does the identical clear inline, for a one-command "retry and run now" workflow; this
+    command is for "just clear them, I'll run the pipeline separately"."""
+    cleared = store.clear_given_up_windows()
+    print(f"cleared {cleared} given-up window(s) -- the next `pipeline run` will re-attempt them")
     return 0
 
 
@@ -544,6 +582,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--skip-vision", action="store_true", help="skip local vision pre-pass + vision-LLM tail")
     p_run.add_argument("--cap", type=int, default=DEFAULT_VISION_CAP, help="vision-LLM tail image cap")
     p_run.add_argument("--corpus-dir", default=None, help="defaults to LOCKET_CORPUS_DIR, else ./demo_corpus")
+    p_run.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "clear previously given-up-on windows before running, so this run re-attempts "
+            "them (same effect as running `pipeline retry-given-up` first, inline)"
+        ),
+    )
+    pipeline_sub.add_parser(
+        "retry-given-up",
+        help=(
+            "clear extracted_windows rows recorded as given-up-on (not successfully "
+            "extracted ones), so the next `pipeline run` re-attempts exactly those windows"
+        ),
+    )
 
     sub.add_parser("label-faces", help="Label detected face clusters interactively").add_argument(
         "--photos-dir", default=None
@@ -620,6 +673,8 @@ def main(
                 resolve_model=resolve_model,
                 profile_model=profile_model,
             )
+        if args.command == "pipeline" and args.pipeline_command == "retry-given-up":
+            return _cmd_pipeline_retry_given_up(active_store)
         if args.command == "label-faces":
             return _cmd_label_faces(args, active_store)
         if args.command == "resolve":

@@ -102,6 +102,7 @@ def test_extract_and_persist_batches_all_fact_embeddings_into_one_call(store, mo
     # Both windows succeeded on their first call -- zero retries/give-ups/escalations.
     assert result.retries == 0
     assert result.give_ups == 0
+    assert result.given_up_window_hashes == []
     assert result.escalations == 0
 
 
@@ -148,7 +149,10 @@ def test_extract_and_persist_bubbles_up_extract_batch_counters_for_a_give_up_win
     function is extract_batch's one caller in the whole codebase, so it must pass retries/
     give_ups/escalations through unchanged even on the empty-rows early-return path -- a
     window that gives up entirely still has counters worth reporting in the per-run JSONL
-    capture (locket stats), not just windows that produced at least one fact."""
+    capture (locket stats), not just windows that produced at least one fact. Also proves
+    given_up_window_hashes (fix-wave-3 follow-up) survives the same early-return path, since
+    it's cli.py's only way to know THIS specific window must be recorded with
+    Store.mark_windows_given_up rather than mark_windows_extracted."""
     backend = _CountingBackend()
     monkeypatch.setattr("locket.pipeline.get_backend", lambda: backend)
 
@@ -164,3 +168,7 @@ def test_extract_and_persist_bubbles_up_extract_batch_counters_for_a_give_up_win
     assert result.retries == 2  # MAX_ATTEMPTS=3 calls -> 2 retries before giving up
     assert result.escalations == 1  # 3rd (final) call escalated
     assert backend.calls == []
+
+    from locket.extraction.graph import window_hash
+
+    assert result.given_up_window_hashes == [window_hash([item_a])]

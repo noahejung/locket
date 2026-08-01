@@ -81,7 +81,29 @@ CREATE TABLE profiles (
 -- is recorded here so a second `pipeline run` over the same corpus doesn't re-call the
 -- model (and re-bill) for it. Same "store.py is the only module that talks to Postgres"
 -- rationale as merge_proposals/profiles above.
+--
+-- `outcome` (fix-wave-3 follow-up to the 2026-08-01 catch-up review's MEDIUM finding): the
+-- pre-existing version of this table recorded a window's presence but not why it stopped
+-- being retried, so a window that gave up transiently (a model-server hiccup, a since-fixed
+-- prompt) was permanently and silently unretryable, indistinguishable from a genuine
+-- success in every counter -- recoverable only by hand-deleting rows. Store.mark_windows_extracted
+-- writes 'extracted' on success; Store.mark_windows_given_up writes 'gave_up' when a window
+-- exhausts MAX_ATTEMPTS without ever reaching a valid parsed result. Both outcomes are still
+-- skipped on an ordinary `pipeline run` (Store.get_window_outcomes/get_extracted_window_hashes),
+-- but `locket pipeline retry-given-up` / `pipeline run --retry-failed`
+-- (Store.clear_given_up_windows) deletes ONLY 'gave_up' rows, so the next run re-attempts
+-- exactly those windows and leaves successfully-extracted ones alone.
+--
+-- Existing databases created before this line need the column added by hand after backfilling
+-- a value for every pre-existing row (`ALTER TABLE extracted_windows ADD COLUMN outcome text
+-- NOT NULL DEFAULT 'extracted' CHECK (outcome IN ('extracted', 'gave_up'));` -- every row that
+-- already exists predates outcome-tracking, so defaulting it to 'extracted' is the closest
+-- available truth, not a guess that matters: it just means give-up windows recorded before
+-- this migration won't retroactively become retryable, same as before), or simpler: recreate
+-- the dev container (`docker compose down -v && docker compose up -d db`) -- demo-corpus data
+-- is fully regenerable via `locket pipeline run`, so recreation is the simpler path there.
 CREATE TABLE extracted_windows (
   window_hash text PRIMARY KEY,
+  outcome text NOT NULL DEFAULT 'extracted' CHECK (outcome IN ('extracted', 'gave_up')),
   created_at timestamptz DEFAULT now()
 );

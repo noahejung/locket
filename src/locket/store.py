@@ -423,30 +423,74 @@ class Store:
             rows = cur.fetchall()
         return {eid: count for eid, count in rows}
 
-    # ---- extracted_windows (pipeline-run idempotency watermark, fix-wave-1 item 8b) ---
+    # ---- extracted_windows (pipeline-run idempotency watermark, fix-wave-1 item 8b;
+    # outcome tracking + retry escape hatch, fix-wave-3 follow-up to the 2026-08-01 catch-up
+    # review's MEDIUM finding -- see db/init.sql's extracted_windows comment for the full
+    # rationale) -----------------------------------------------------------------------
+
+    def get_window_outcomes(self, hashes: list[str]) -> dict[str, str]:
+        """Which of `hashes` are already recorded, and with what outcome ('extracted' |
+        'gave_up') -- lets the pipeline both skip windows a prior `pipeline run` already
+        spent model calls on (any key present, regardless of outcome) AND split the skip
+        count by outcome for `locket stats`/the per-run JSONL, which previously conflated
+        already-succeeded with already-given-up in a single `windows_skipped` number. Empty
+        input returns an empty dict without a round-trip."""
+        if not hashes:
+            return {}
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT window_hash, outcome FROM extracted_windows WHERE window_hash = ANY(%s)",
+                (hashes,),
+            )
+            rows = cur.fetchall()
+        return {h: outcome for h, outcome in rows}
 
     def get_extracted_window_hashes(self, hashes: list[str]) -> set[str]:
-        """Which of `hashes` are already recorded as extracted -- lets the pipeline skip
-        windows a prior `pipeline run` already spent model calls on. Empty input returns an
-        empty set without a round-trip."""
-        if not hashes:
-            return set()
-        with self._conn.transaction(), self._conn.cursor() as cur:
-            cur.execute("SELECT window_hash FROM extracted_windows WHERE window_hash = ANY(%s)", (hashes,))
-            rows = cur.fetchall()
-        return {r[0] for r in rows}
+        """Which of `hashes` are already recorded as done -- extracted OR given-up-on,
+        either way the pipeline already spent up to MAX_ATTEMPTS model calls reaching a
+        terminal state for it, so both are skipped on an ordinary `pipeline run`. A thin
+        wrapper over get_window_outcomes (which is what cli.py's `_run_pipeline` actually
+        calls now, since it also needs the per-hash outcome, not just membership) -- kept as
+        its own method because "is this window done at all" is still a clear, useful shape
+        on its own."""
+        return set(self.get_window_outcomes(hashes))
 
     def mark_windows_extracted(self, hashes: list[str]) -> None:
-        """Record `hashes` as extracted. ON CONFLICT DO NOTHING -- window_hash is the primary
-        key, and a window can be marked at most once."""
+        """Record `hashes` as successfully extracted. ON CONFLICT DO NOTHING -- window_hash
+        is the primary key, and a window can be marked at most once (first-recorded outcome
+        wins; see mark_windows_given_up)."""
+        self._mark_windows(hashes, outcome="extracted")
+
+    def mark_windows_given_up(self, hashes: list[str]) -> None:
+        """Record `hashes` as given-up-on -- extraction exhausted MAX_ATTEMPTS without ever
+        reaching a valid parsed result. A DISTINCT outcome from mark_windows_extracted so
+        `pipeline retry-given-up`/`pipeline run --retry-failed` (clear_given_up_windows
+        below) can clear ONLY these rows, never a successfully-extracted one. ON CONFLICT DO
+        NOTHING, same first-outcome-wins semantics as mark_windows_extracted."""
+        self._mark_windows(hashes, outcome="gave_up")
+
+    def _mark_windows(self, hashes: list[str], *, outcome: str) -> None:
         if not hashes:
             return
         with self._conn.transaction(), self._conn.cursor() as cur:
             for h in hashes:
                 cur.execute(
-                    "INSERT INTO extracted_windows (window_hash) VALUES (%s) ON CONFLICT (window_hash) DO NOTHING",
-                    (h,),
+                    "INSERT INTO extracted_windows (window_hash, outcome) VALUES (%s, %s) "
+                    "ON CONFLICT (window_hash) DO NOTHING",
+                    (h, outcome),
                 )
+
+    def clear_given_up_windows(self) -> int:
+        """Delete every extracted_windows row with outcome='gave_up' -- the escape hatch
+        behind `locket pipeline retry-given-up` and `pipeline run --retry-failed`. Before
+        this method existed, a give-up was permanently and silently unretryable except by
+        hand-deleting rows (2026-08-01 catch-up review, MEDIUM). Successfully-extracted rows
+        are untouched, so the next `pipeline run` re-attempts exactly (and only) the windows
+        that gave up. Returns the number of rows deleted so the CLI can report it."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute("DELETE FROM extracted_windows WHERE outcome = 'gave_up'")
+            deleted = cur.rowcount
+        return deleted
 
     # ---- entities -------------------------------------------------------------------
 

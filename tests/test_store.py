@@ -442,6 +442,69 @@ def test_extracted_window_hashes_empty_input_short_circuits(store):
         assert cur.fetchone()[0] == 0
 
 
+# ---------------------------------------------------------------------------
+# extracted_windows outcome tracking + retry escape hatch (fix-wave-3 follow-up to the
+# 2026-08-01 catch-up review's MEDIUM finding: give-up windows were permanently, silently
+# unretryable, indistinguishable from a successful skip).
+# ---------------------------------------------------------------------------
+
+
+def test_get_window_outcomes_distinguishes_extracted_from_gave_up(store):
+    assert store.get_window_outcomes(["h1", "h2"]) == {}
+
+    store.mark_windows_extracted(["h1"])
+    store.mark_windows_given_up(["h2"])
+
+    assert store.get_window_outcomes(["h1", "h2", "h3"]) == {"h1": "extracted", "h2": "gave_up"}
+    # get_extracted_window_hashes is a thin membership-only wrapper over the same data --
+    # both outcomes count as "done" for it, since both mean the pipeline already spent
+    # model calls reaching a terminal state.
+    assert store.get_extracted_window_hashes(["h1", "h2", "h3"]) == {"h1", "h2"}
+
+
+def test_get_window_outcomes_empty_input_short_circuits(store):
+    assert store.get_window_outcomes([]) == {}
+
+
+def test_mark_windows_given_up_is_idempotent(store):
+    store.mark_windows_given_up(["h1", "h2"])
+    store.mark_windows_given_up(["h1"])  # re-marking is a no-op, not a duplicate-key error
+
+    assert store.get_window_outcomes(["h1", "h2"]) == {"h1": "gave_up", "h2": "gave_up"}
+
+
+def test_first_recorded_outcome_wins_on_conflict(store):
+    """A hash marked given-up, then later passed to mark_windows_extracted (shouldn't happen
+    in practice -- cli.py only calls mark_windows_extracted for hashes not already recorded
+    -- but the DB-level contract is ON CONFLICT DO NOTHING either way) must keep its
+    original outcome, not flip it. The only sanctioned way to change a hash's fate is
+    clear_given_up_windows deleting the row outright."""
+    store.mark_windows_given_up(["h1"])
+    store.mark_windows_extracted(["h1"])
+
+    assert store.get_window_outcomes(["h1"]) == {"h1": "gave_up"}
+
+
+def test_clear_given_up_windows_deletes_only_gave_up_rows_and_returns_the_count(store):
+    store.mark_windows_extracted(["h1", "h2"])
+    store.mark_windows_given_up(["h3", "h4", "h5"])
+
+    deleted = store.clear_given_up_windows()
+
+    assert deleted == 3
+    assert store.get_window_outcomes(["h1", "h2", "h3", "h4", "h5"]) == {
+        "h1": "extracted",
+        "h2": "extracted",
+    }
+
+
+def test_clear_given_up_windows_returns_zero_when_nothing_to_clear(store):
+    store.mark_windows_extracted(["h1"])
+
+    assert store.clear_given_up_windows() == 0
+    assert store.get_window_outcomes(["h1"]) == {"h1": "extracted"}  # untouched
+
+
 def test_list_entities_and_get_entity(store):
     person_id = store.upsert_entity("John", "person", _vec(1.0))
     place_id = store.upsert_entity("Boston", "place", _vec(-1.0))

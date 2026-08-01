@@ -214,6 +214,238 @@ def test_pipeline_run_second_invocation_skips_already_extracted_windows(store, t
         assert cur.fetchone()[0] >= 1
 
 
+# ---------------------------------------------------------------------------
+# pipeline run -- give-up outcome tracking + the retry escape hatch (fix-wave-3 follow-up
+# to the 2026-08-01 catch-up review's MEDIUM finding: a window that gave up was marked
+# identically to a successful one and was permanently, silently unretryable).
+# ---------------------------------------------------------------------------
+
+
+def _write_two_window_whatsapp_corpus(tmp_path: Path) -> Path:
+    """Two SEPARATE whatsapp files -> two separate discover_corpus_sources groups -> two
+    independent extract_and_persist calls, each windowing to exactly one item/one window --
+    simpler to reason about deterministically than two windows dispatched via LangGraph's
+    Send fan-out within a single group. "failwin"/"okwin" are marker substrings
+    _MarkerRoutedModel below routes on."""
+    corpus_dir = tmp_path / "corpus"
+    wa_dir = corpus_dir / "whatsapp"
+    wa_dir.mkdir(parents=True)
+    (wa_dir / "failing.txt").write_text(
+        "1/15/25, 10:32 AM - John: failwin this window always breaks\n",
+        encoding="utf-8",
+    )
+    (wa_dir / "succeeding.txt").write_text(
+        "1/15/25, 10:32 AM - John: okwin this window always works\n",
+        encoding="utf-8",
+    )
+    return corpus_dir
+
+
+def _always_invalid_response() -> dict:
+    return {"raw": None, "parsed": None, "parsing_error": ValueError("scripted failure")}
+
+
+def _one_fact_response(statement: str) -> dict:
+    fact = ExtractedFact(kind=FactKind.event, statement=statement, subjects=["Noah"], confidence=0.9)
+    return {"raw": None, "parsed": ExtractionResult(facts=[fact]), "parsing_error": None}
+
+
+class _MarkerRoutedModel:
+    """Routes on a substring marker in the rendered prompt, not call order (mirrors
+    test_extraction_graph.py's _ScriptedModel) -- returns the SAME response every time a
+    marker matches (not a one-shot queue), since a give-up window is invoked up to
+    MAX_ATTEMPTS times while a success window is invoked once. Lets a test build a corpus
+    where one window deterministically gives up and another deterministically succeeds."""
+
+    def __init__(self, responses: dict[str, dict]):
+        self._responses = responses
+        self.calls: list[str] = []
+
+    def invoke(self, prompt: str) -> dict:
+        self.calls.append(prompt)
+        for marker, response in self._responses.items():
+            if marker in prompt:
+                return response
+        raise AssertionError(f"no scripted response for prompt:\n{prompt}")
+
+
+def test_pipeline_run_give_up_window_is_recorded_with_a_distinct_outcome(store, tmp_path, capsys):
+    corpus_dir = _write_two_window_whatsapp_corpus(tmp_path)
+    model = _MarkerRoutedModel(
+        {"failwin": _always_invalid_response(), "okwin": _one_fact_response("Something happened")}
+    )
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["give_ups"] == 1
+    assert summary["facts_created"] == 1  # only the succeeding window's fact
+
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT outcome FROM extracted_windows ORDER BY outcome")
+        outcomes = [r[0] for r in cur.fetchall()]
+    assert outcomes == ["extracted", "gave_up"]
+
+
+def test_pipeline_run_second_invocation_splits_skipped_windows_by_outcome(store, tmp_path, capsys):
+    """The LOW half of the same finding: `windows_skipped` alone conflates
+    already-succeeded with already-given-up. A second run over the same corpus must make
+    ZERO new model calls for either window (both are already terminal), but the summary
+    must report which outcome each skip was."""
+    corpus_dir = _write_two_window_whatsapp_corpus(tmp_path)
+    responses = {"failwin": _always_invalid_response(), "okwin": _one_fact_response("Something happened")}
+
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_MarkerRoutedModel(responses),
+        profile_model=_EchoProfileModel(),
+    )
+    capsys.readouterr()
+
+    second_model = _MarkerRoutedModel(responses)
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=second_model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    assert second_model.calls == []  # zero new model calls -- both windows already terminal
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["windows_skipped_extracted"] == 1
+    assert summary["windows_skipped_gave_up"] == 1
+    assert summary["windows_skipped"] == 2  # backward-compatible sum
+
+
+def test_pipeline_retry_given_up_clears_only_gave_up_rows_and_a_third_run_reattempts_them(
+    store, tmp_path, capsys
+):
+    corpus_dir = _write_two_window_whatsapp_corpus(tmp_path)
+    responses = {"failwin": _always_invalid_response(), "okwin": _one_fact_response("Something happened")}
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_MarkerRoutedModel(responses),
+        profile_model=_EchoProfileModel(),
+    )
+    capsys.readouterr()
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM facts")
+        facts_after_first_run = cur.fetchone()[0]
+
+    retry_exit_code = main(["pipeline", "retry-given-up"], store=store)
+
+    assert retry_exit_code == 0
+    retry_out = capsys.readouterr().out
+    assert "1" in retry_out  # "cleared 1 given-up window(s) ..."
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT outcome FROM extracted_windows")
+        remaining = [r[0] for r in cur.fetchall()]
+    assert remaining == ["extracted"]  # only the successfully-extracted row survives
+
+    # Third run: the previously-failing window now succeeds -- proves it was actually
+    # re-attempted, not just left pending forever.
+    third_model = _MarkerRoutedModel(
+        {"failwin": _one_fact_response("Finally recovered"), "okwin": _one_fact_response("should not be called")}
+    )
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=third_model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    assert len(third_model.calls) == 1  # exactly the give-up window re-attempted
+    assert "failwin" in third_model.calls[0]
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["windows_processed"] == 1
+    assert summary["windows_skipped_extracted"] == 1  # the "okwin" window, untouched
+    assert summary["windows_skipped_gave_up"] == 0
+    assert summary["give_ups"] == 0
+
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM facts")
+        assert cur.fetchone()[0] == facts_after_first_run + 1  # the recovered fact persisted
+        cur.execute("SELECT outcome FROM extracted_windows ORDER BY outcome")
+        outcomes = [r[0] for r in cur.fetchall()]
+    assert outcomes == ["extracted", "extracted"]
+
+
+def test_pipeline_retry_given_up_with_nothing_to_clear_reports_zero(store, capsys):
+    exit_code = main(["pipeline", "retry-given-up"], store=store)
+
+    assert exit_code == 0
+    assert "0" in capsys.readouterr().out
+
+
+def test_pipeline_run_retry_failed_flag_clears_give_ups_before_running_inline(store, tmp_path, capsys):
+    """`--retry-failed` is `pipeline retry-given-up` inlined into the same `pipeline run`
+    invocation -- one command instead of two for the common "retry and run now" case."""
+    corpus_dir = _write_two_window_whatsapp_corpus(tmp_path)
+    responses = {"failwin": _always_invalid_response(), "okwin": _one_fact_response("Something happened")}
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_MarkerRoutedModel(responses),
+        profile_model=_EchoProfileModel(),
+    )
+    capsys.readouterr()
+
+    retry_model = _MarkerRoutedModel(
+        {"failwin": _one_fact_response("Recovered via flag"), "okwin": _one_fact_response("should not be called")}
+    )
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--retry-failed", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=retry_model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    assert len(retry_model.calls) == 1
+    assert "failwin" in retry_model.calls[0]
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["given_up_cleared"] == 1
+
+
+def test_pipeline_run_retry_failed_flag_defaults_to_off_and_is_a_no_op_with_nothing_given_up(
+    store, tmp_path, capsys
+):
+    corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--retry-failed", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_AlwaysOneFactModel(),
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["given_up_cleared"] == 0
+
+
+def test_pipeline_run_without_retry_failed_defaults_to_false_via_argparse():
+    parser = build_parser()
+    args = parser.parse_args(["pipeline", "run"])
+    assert args.retry_failed is False
+
+
+def test_pipeline_retry_given_up_is_a_valid_subcommand_via_argparse():
+    parser = build_parser()
+    args = parser.parse_args(["pipeline", "retry-given-up"])
+    assert args.pipeline_command == "retry-given-up"
+
+
 def test_pipeline_run_prints_json_summary(store, tmp_path, capsys):
     corpus_dir = _write_mini_whatsapp_corpus(tmp_path)
 
@@ -646,3 +878,34 @@ def test_stats_reports_the_last_pipeline_run_record(store, tmp_path, monkeypatch
     payload = json.loads(capsys.readouterr().out)
     assert payload["last_run"] is not None
     assert payload["last_run"]["windows_processed"] == 1
+
+
+def test_stats_reports_windows_skipped_split_by_outcome(store, tmp_path, monkeypatch, capsys):
+    """The other LOW half of the fix-wave-3 follow-up: `locket stats` reads the last run
+    record wholesale (cli.py's _cmd_stats), so the split fields must actually be present in
+    what `pipeline run` appends, not just computed and discarded."""
+    monkeypatch.chdir(tmp_path)
+    corpus_dir = _write_two_window_whatsapp_corpus(tmp_path)
+    responses = {"failwin": _always_invalid_response(), "okwin": _one_fact_response("Something happened")}
+
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_MarkerRoutedModel(responses),
+        profile_model=_EchoProfileModel(),
+    )
+    main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(corpus_dir)],
+        store=store,
+        extraction_model=_MarkerRoutedModel(responses),
+        profile_model=_EchoProfileModel(),
+    )
+    capsys.readouterr()
+
+    exit_code = main(["stats", "--json"], store=store)
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["last_run"]["windows_skipped_extracted"] == 1
+    assert payload["last_run"]["windows_skipped_gave_up"] == 1
+    assert payload["last_run"]["windows_skipped"] == 2

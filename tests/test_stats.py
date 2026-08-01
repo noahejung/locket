@@ -19,6 +19,8 @@ def _record(**overrides) -> RunRecord:
         model="gemma3:12b",
         windows_processed=3,
         windows_skipped=1,
+        windows_skipped_extracted=1,
+        windows_skipped_gave_up=0,
         facts_added=5,
         dedup_hits=2,
         retries=1,

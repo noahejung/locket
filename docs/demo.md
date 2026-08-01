@@ -47,6 +47,18 @@ skips the local vision pre-pass + Ollama vision-LLM tail for a fast pass —
 drop it for the full run (see `evals/BASELINE.md` for measured latency:
 ~135s/image on a CPU-only machine).
 
+A re-run over the same corpus skips every window it already reached a
+terminal state for — successfully extracted or not — so it never re-bills a
+model call for the same window twice. A window that exhausts its retries
+(`MAX_ATTEMPTS=3`, e.g. a transient model-server hiccup) is recorded
+separately as "given up", not "extracted", and `locket stats` reports the
+two counts separately (`windows_skipped_extracted` /
+`windows_skipped_gave_up`). To retry only the windows that gave up —
+without re-spending model calls on windows that already succeeded — either
+run `locket pipeline run --retry-failed --corpus-dir demo_corpus` (clears
+give-ups, then runs immediately) or `locket pipeline retry-given-up` first
+(clears only, prints how many, run the pipeline separately after).
+
 ## 3. Ask it about the (synthetic) group's life
 
 Once registered as an MCP server (see below), ask Claude three questions —

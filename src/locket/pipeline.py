@@ -75,12 +75,20 @@ class ExtractAndPersistResult:
     -- this function makes extract_batch's one call in the whole codebase, so it's the only
     place those counters can be picked up on their way to cli.py's per-run JSONL capture
     (`locket stats`, metrics.md §1/§5). `rows`, not `facts` (extract_batch's own field name)
-    -- elements here are already-persisted FactRow, not the pre-persistence ExtractedFact."""
+    -- elements here are already-persisted FactRow, not the pre-persistence ExtractedFact.
+
+    `given_up_window_hashes` is extract_batch's own field of the same name, bubbled through
+    unchanged (fix-wave-3 follow-up to the 2026-08-01 catch-up review's MEDIUM finding) --
+    cli.py's `_run_pipeline` is this function's only caller that cares about it (to call
+    Store.mark_windows_given_up instead of mark_windows_extracted for exactly those windows);
+    evals/extraction_eval.py's run_extraction_pipeline, this module's other consumer, has no
+    idempotency watermark of its own and simply discards it."""
 
     rows: list[tuple[FactRow, list[str]]]
     retries: int
     give_ups: int
     escalations: int
+    given_up_window_hashes: list[str]
 
 
 def extract_and_persist(
@@ -111,7 +119,11 @@ def extract_and_persist(
     batch = extract_batch(items, model=model, windows_override=windows_override)
     if not batch.facts:
         return ExtractAndPersistResult(
-            rows=[], retries=batch.retries, give_ups=batch.give_ups, escalations=batch.escalations
+            rows=[],
+            retries=batch.retries,
+            give_ups=batch.give_ups,
+            escalations=batch.escalations,
+            given_up_window_hashes=batch.given_up_window_hashes,
         )
 
     facts = [
@@ -144,7 +156,11 @@ def extract_and_persist(
         )
         out.append((row, extracted_fact.subjects))
     return ExtractAndPersistResult(
-        rows=out, retries=batch.retries, give_ups=batch.give_ups, escalations=batch.escalations
+        rows=out,
+        retries=batch.retries,
+        give_ups=batch.give_ups,
+        escalations=batch.escalations,
+        given_up_window_hashes=batch.given_up_window_hashes,
     )
 
 

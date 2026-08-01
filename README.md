@@ -54,9 +54,9 @@ claude mcp add --scope user locket -- uv run --directory "$(pwd)" python -m lock
 ```
 
 Full command reference (every subcommand: `ingest`, `pipeline run`,
-`resolve`, `label-faces`, `eval extraction|rag`, `profile build`, `serve`)
-and the exact Claude Desktop registration JSON block:
-**[`docs/demo.md`](docs/demo.md)**.
+`pipeline retry-given-up`, `resolve`, `label-faces`, `eval extraction|rag`,
+`profile build`, `serve`) and the exact Claude Desktop registration JSON
+block: **[`docs/demo.md`](docs/demo.md)**.
 
 To run against your own data instead of the demo corpus, set
 `LOCKET_CORPUS_DIR` in a local `.env` (never inside this repo — see

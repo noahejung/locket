@@ -24,13 +24,24 @@ class RunRecord:
     """One `pipeline run` invocation's numbers -- exactly metrics.md §1's per-run column
     set plus the timing/backend context needed to make a run reproducible-in-spirit later.
     A plain dict would work too, but an explicit dataclass keeps the JSONL schema
-    self-documenting at the one place it's constructed (cli.py's `_cmd_pipeline_run`)."""
+    self-documenting at the one place it's constructed (cli.py's `_cmd_pipeline_run`).
+
+    `windows_skipped_extracted`/`windows_skipped_gave_up` (fix-wave-3 follow-up to the
+    2026-08-01 catch-up review's LOW finding): `windows_skipped` alone conflated windows
+    skipped because they already succeeded with windows skipped because they'd already
+    given up -- indistinguishable in one number, even though only the latter is retryable
+    via `pipeline retry-given-up`/`pipeline run --retry-failed`. `windows_skipped` is kept
+    as their sum, unchanged, for backward compatibility with any code/tooling reading the
+    JSONL shape (read_last_run_record returns a loose dict, not a rehydrated RunRecord, so
+    older lines missing the two new fields still read back fine)."""
 
     timestamp: str  # ISO 8601 UTC, when the run finished
     backend: str  # "anthropic" | "ollama" -- locket.llm.resolve_backend's output
     model: str  # concrete model id/name -- locket.llm.model_name's output
     windows_processed: int
-    windows_skipped: int
+    windows_skipped: int  # == windows_skipped_extracted + windows_skipped_gave_up
+    windows_skipped_extracted: int
+    windows_skipped_gave_up: int
     facts_added: int  # genuinely NEW fact rows (store's total-count delta across the run)
     dedup_hits: int  # extracted candidates that hit add_fact's statement-hash ON CONFLICT
     retries: int

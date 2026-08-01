@@ -188,11 +188,24 @@ def _build_batch_graph(model: Any | None):
 def window_hash(window: list[RawItem]) -> str:
     """Deterministic identity for one window -- sha256 of its ordered provenance (raw_item)
     ids. Used by cli.py's `_run_pipeline` as the extracted-windows idempotency watermark
-    key (Store.get_extracted_window_hashes/mark_windows_extracted) so a second `pipeline
-    run` over the same corpus skips windows it already spent model calls on. Order matters:
-    a window is a specific chronological slice through a conversation, not an unordered set
-    of messages, so the same items in a different order are NOT the same window."""
-    return hashlib.sha256("|".join(item.id for item in window).encode()).hexdigest()
+    key (Store.get_window_outcomes/mark_windows_extracted/mark_windows_given_up) so a second
+    `pipeline run` over the same corpus skips windows it already spent model calls on. Order
+    matters: a window is a specific chronological slice through a conversation, not an
+    unordered set of messages, so the same items in a different order are NOT the same
+    window."""
+    return window_hash_from_provenance([item.id for item in window])
+
+
+def window_hash_from_provenance(provenance: list[str]) -> str:
+    """Same identity as window_hash, computed directly from an already-extracted provenance
+    id list (a run_batch/extract_batch per-window result dict's `provenance` field) instead
+    of a list[RawItem]. Used by extract_batch to tag BatchExtractionResult's
+    given_up_window_hashes below without needing to keep the original list[RawItem] windows
+    around, or to trust that LangGraph's Send fan-out preserves dispatch order across
+    windows -- it is not a documented guarantee (test_extraction_graph.py's _ScriptedModel
+    is predicate-, not call-order-, based for exactly this reason). Recomputing the hash
+    from each result's own provenance is order-independent by construction."""
+    return hashlib.sha256("|".join(provenance).encode()).hexdigest()
 
 
 def run_batch(
@@ -231,12 +244,21 @@ class BatchExtractionResult:
 
     `facts`, not `rows` -- elements are still ExtractedFact (pre-persistence); pipeline.py's
     extract_and_persist has its own explicit result type (ExtractAndPersistResult, `rows`)
-    for the post-persistence FactRow shape, one layer up."""
+    for the post-persistence FactRow shape, one layer up.
+
+    `given_up_window_hashes` (fix-wave-3 follow-up to the 2026-08-01 catch-up review's
+    MEDIUM finding): window_hash_from_provenance of every window that hit route()'s
+    "give_up" terminal state this call -- lets cli.py's `_run_pipeline` record those
+    specific windows with Store.mark_windows_given_up (a distinct outcome from
+    mark_windows_extracted) instead of the pre-fix behavior of marking every attempted
+    window as unconditionally "done", which made a give-up permanently and
+    indistinguishably unretryable."""
 
     facts: list[tuple[ExtractedFact, list[str]]]
     retries: int
     give_ups: int
     escalations: int
+    given_up_window_hashes: list[str]
 
 
 def extract_batch(
@@ -246,6 +268,7 @@ def extract_batch(
     retries = 0
     give_ups = 0
     escalations = 0
+    given_up_window_hashes: list[str] = []
     for window_result in run_batch(items, model=model, windows_override=windows_override):
         # `attempt` is the per-window state's post-increment call count (_initial_window_state
         # starts it at 0; extract_node increments once per model call) -- always >= 1 in a
@@ -266,8 +289,15 @@ def extract_batch(
         # ordinary chit-chat windows as pipeline failures.
         if facts is None:
             give_ups += 1
+            given_up_window_hashes.append(window_hash_from_provenance(window_result["provenance"]))
             continue
         provenance = window_result["provenance"]
         for fact_dict in facts:
             out.append((ExtractedFact.model_validate(fact_dict), provenance))
-    return BatchExtractionResult(facts=out, retries=retries, give_ups=give_ups, escalations=escalations)
+    return BatchExtractionResult(
+        facts=out,
+        retries=retries,
+        give_ups=give_ups,
+        escalations=escalations,
+        given_up_window_hashes=given_up_window_hashes,
+    )

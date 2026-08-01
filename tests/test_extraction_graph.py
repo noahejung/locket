@@ -15,7 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from locket.extraction.graph import _should_escalate, extract_batch, run_batch
+from locket.extraction.graph import (
+    _should_escalate,
+    extract_batch,
+    run_batch,
+    window_hash,
+    window_hash_from_provenance,
+)
 from locket.extraction.schemas import ExtractedFact, ExtractionResult
 from locket.models import FactKind, RawItem, SourceKind
 
@@ -152,6 +158,58 @@ def test_give_up_window_does_not_block_a_sibling_windows_facts():
     assert result.retries == 2
     assert result.give_ups == 1
     assert result.escalations == 1
+
+
+def test_window_hash_from_provenance_matches_window_hash_for_the_same_window():
+    """window_hash_from_provenance (fix-wave-3 follow-up: cli.py's `_run_pipeline` needs to
+    map extract_batch's given_up_window_hashes back to the pending_hashes it computed via
+    window_hash BEFORE extraction ran) must be the exact same identity as window_hash, just
+    computed from a provenance id list instead of a list[RawItem]."""
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    window = [_item(base, "hello"), _item(base + timedelta(minutes=1), "world", sender="Sarah")]
+
+    assert window_hash_from_provenance([item.id for item in window]) == window_hash(window)
+
+
+def test_window_hash_from_provenance_is_order_sensitive():
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    window = [_item(base, "hello"), _item(base + timedelta(minutes=1), "world")]
+    ids = [item.id for item in window]
+
+    assert window_hash_from_provenance(ids) != window_hash_from_provenance(list(reversed(ids)))
+
+
+def test_extract_batch_surfaces_given_up_window_hashes_for_only_the_windows_that_gave_up():
+    """given_up_window_hashes (fix-wave-3 follow-up to the 2026-08-01 catch-up review's
+    MEDIUM finding) lets a caller (cli.py's `_run_pipeline`) record ONLY the windows that
+    actually gave up with Store.mark_windows_given_up, distinct from the ones that
+    succeeded -- before this field existed, every attempted window was marked identically
+    regardless of outcome, making a give-up permanently and silently unretryable."""
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    failing = [_item(base, "failwin hello")]
+    succeeding = [_item(base + timedelta(hours=10), "okwin hello")]
+
+    model = _ScriptedModel(
+        [
+            (lambda p: "failwin" in p, [_err("bad 1"), _err("bad 2"), _err("bad 3")]),
+            (lambda p: "okwin" in p, [_ok("A fine fact")]),
+        ]
+    )
+
+    result = extract_batch(failing + succeeding, model=model)
+
+    assert result.given_up_window_hashes == [window_hash(failing)]
+    assert window_hash(succeeding) not in result.given_up_window_hashes
+
+
+def test_extract_batch_given_up_window_hashes_is_empty_when_nothing_gives_up():
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    clean = [_item(base, "cleanwin hello")]
+    model = _ScriptedModel([(lambda p: "cleanwin" in p, [_ok("Clean fact")])])
+
+    result = extract_batch(clean, model=model)
+
+    assert result.given_up_window_hashes == []
 
 
 def test_extract_batch_surfaces_retry_give_up_and_escalation_counters_across_a_mixed_batch():
