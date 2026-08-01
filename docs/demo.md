@@ -10,8 +10,8 @@ fully local" section).
 ## 0. Setup (once)
 
 ```bash
-cd "C:\Users\nejtu\Desktop\development repos\locket"
-docker compose up -d db      # Postgres + pgvector
+cd /path/to/your/clone/of/locket   # adjust to wherever you cloned this repo
+docker compose up -d db            # Postgres + pgvector
 uv sync
 ```
 
@@ -97,13 +97,14 @@ once a key is available, the real recorded numbers.
 **Claude Code:**
 
 ```bash
-claude mcp add --scope user locket -- uv run --directory "C:\Users\nejtu\Desktop\development repos\locket" python -m locket.mcp_server
+claude mcp add --scope user locket -- uv run --directory /path/to/your/clone/of/locket python -m locket.mcp_server
 claude mcp list   # verify it shows up as "locket"
 ```
 
 **Claude Desktop** — add this block to
 `%APPDATA%\Claude\claude_desktop_config.json` (absolute paths only; merge into
-the existing `mcpServers` object if one already exists):
+the existing `mcpServers` object if one already exists; adjust the path below
+to wherever you cloned this repo):
 
 ```json
 {
@@ -113,7 +114,7 @@ the existing `mcpServers` object if one already exists):
       "args": [
         "run",
         "--directory",
-        "C:\\Users\\nejtu\\Desktop\\development repos\\locket",
+        "C:\\path\\to\\your\\clone\\of\\locket",
         "python",
         "-m",
         "locket.mcp_server"
