@@ -122,6 +122,25 @@ def test_update_fact_writes_history_and_mutates(store):
     assert events == ["ADD", "UPDATE", "EXPIRE"]
 
 
+def test_update_fact_rejects_a_non_mutable_column(store):
+    """Fix-wave-1 item 10 / code-quality review's latent-injection-shape finding:
+    update_fact's SET clause interpolates column NAMES straight from kwargs (values stay
+    parameterized) -- safe at every current call site, but one allowlist away from
+    defensive. `id` is a real column but must never be settable through this generic path."""
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(kind=FactKind.habit, statement="Sarah runs", confidence=0.7, provenance=[raw.id])
+    fact_id = store.add_fact(fact, embedding=_vec(2.0))
+
+    with pytest.raises(ValueError, match="non-mutable column"):
+        store.update_fact(fact_id, id="00000000-0000-0000-0000-000000000000")
+
+    # Rejected before any write -- the fact is untouched, and the connection stays usable.
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT confidence FROM facts WHERE id = %s", (fact_id,))
+        assert cur.fetchone()[0] == pytest.approx(0.7)
+
+
 def test_update_fact_a_second_time_with_populated_entity_ids_does_not_crash(store):
     """Regression: psycopg returns a `uuid[]` column as `list[uuid.UUID]`, not `list[str]`.
     `update_fact`'s history write reads the fact's CURRENT row as `prev` before applying the

@@ -32,6 +32,17 @@ _FACT_COLUMNS = (
     "invalid_at",
 )
 
+# update_fact's SET clause interpolates column NAMES straight from **changes' keys (values
+# stay parameterized) -- safe at every current call site (cli.py only ever passes
+# entity_ids=..., tests only confidence=/invalid_at=), but a latent SQL-injection SHAPE:
+# nothing stopped an arbitrary kwarg name from becoming a column identifier. `id`,
+# `provenance` (the audit trail), `valid_at`/`created_at`/`hash`/`embedding`/`body` (insert-
+# time-only or derived) are deliberately excluded. `statement` is excluded too, on purpose,
+# not by oversight -- `hash` is md5(statement) computed only at insert time for add_fact's
+# dedup check, and a generic update_fact(..., statement=...) would leave `hash` stale
+# without also fixing that recomputation, which is out of this fix's scope.
+_MUTABLE_COLUMNS = frozenset({"kind", "confidence", "entity_ids", "happened_at", "invalid_at"})
+
 
 @dataclass
 class FactRow:
@@ -210,6 +221,13 @@ class Store:
             all_changes["invalid_at"] = invalid_at
         if not all_changes:
             return
+
+        non_mutable = set(all_changes) - _MUTABLE_COLUMNS
+        if non_mutable:
+            raise ValueError(
+                f"update_fact got non-mutable column(s): {sorted(non_mutable)} -- "
+                f"allowed: {sorted(_MUTABLE_COLUMNS)}"
+            )
 
         with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute("SELECT * FROM facts WHERE id = %s", (fact_id,))
