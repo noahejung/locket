@@ -140,6 +140,52 @@ def test_give_up_window_does_not_block_a_sibling_windows_facts():
     assert results[0][1] == [succeeding[0].id]
 
 
+def test_hard_model_error_gives_up_that_window_without_aborting_the_batch():
+    """Regression (fix-wave-1 item 7, MUST-FIX #6 of the code-quality review): a
+    ConnectionError from .invoke() used to propagate straight out of extract_node, uncaught
+    -- LangGraph's own RetryPolicy(max_attempts=3) retries the node a few times but
+    re-raises once exhausted, and nothing above the node caught it, so the WHOLE batch
+    graph's .invoke() call raised and every sibling window's already-extracted facts were
+    lost too. Two windows: one whose model call always raises ConnectionError, one that
+    succeeds normally -- the batch must not raise, the failing window must reach the same
+    give-up-with-notes-marker terminal state validation failures already do, and the
+    succeeding window's fact must still come back."""
+    base = datetime(2025, 1, 1, tzinfo=UTC)
+    failing = [_item(base, "hardfail hello")]
+    succeeding = [_item(base + timedelta(hours=10), "hardok hello")]
+
+    class _MixedModel:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def invoke(self, prompt: str):
+            self.calls.append(prompt)
+            if "hardfail" in prompt:
+                raise ConnectionError("simulated network outage")
+            return _ok("A fine fact despite the sibling's outage")
+
+    model = _MixedModel()
+
+    raw_results = run_batch(failing + succeeding, model=model)  # must not raise
+
+    by_provenance = {tuple(r["provenance"]): r for r in raw_results}
+    failing_result = by_provenance[(failing[0].id,)]
+    succeeding_result = by_provenance[(succeeding[0].id,)]
+
+    assert failing_result["facts"] is None
+    assert failing_result["attempt"] == 3  # exhausted the same MAX_ATTEMPTS as validation failures
+    assert "ConnectionError" in failing_result["notes"]
+    assert len(model.calls) == 4  # 3 attempts on the failing window + 1 on the succeeding one
+
+    assert succeeding_result["facts"] is not None
+    assert succeeding_result["facts"][0]["statement"] == "A fine fact despite the sibling's outage"
+
+    # extract_batch's flattening wrapper over the same run must also stay upright end-to-end.
+    flattened = extract_batch(failing + succeeding, model=model)
+    assert len(flattened) == 1
+    assert flattened[0][0].statement == "A fine fact despite the sibling's outage"
+
+
 @pytest.mark.llm
 def test_live_smoke_extracts_at_least_one_plausible_fact():
     if not os.environ.get("ANTHROPIC_API_KEY"):

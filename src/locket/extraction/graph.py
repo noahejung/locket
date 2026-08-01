@@ -120,7 +120,21 @@ def _build_window_subgraph(model: Any | None):
             active = _escalation_model() if _should_escalate(attempt) else _default_model()
 
         prompt = _build_prompt(_render_transcript(state["window"]), state.get("last_error"))
-        response = active.invoke(prompt)
+        try:
+            response = active.invoke(prompt)
+        except Exception as exc:  # noqa: BLE001 - a hard model-call failure (network/rate-
+            # limit/anything RetryPolicy's own retries didn't clear) must be contained to
+            # THIS window, same as a validation failure -- feed it into the identical
+            # attempt/last_error/give-up state machine below instead of letting it escape
+            # extract_node, where nothing catches it and it aborts the whole batch graph
+            # (LangGraph's Send fan-out does not isolate one branch's uncaught exception
+            # from the others). This is the graph's own explicit corrective-retry loop
+            # (module docstring), not RetryPolicy, doing the containing.
+            return {
+                "attempt": attempt + 1,
+                "last_error": f"{type(exc).__name__}: {exc}",
+                "facts": None,
+            }
         parsed = response.get("parsed")
         parsing_error = response.get("parsing_error")
 
