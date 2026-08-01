@@ -10,7 +10,13 @@ from langchain_anthropic import ChatAnthropic
 from langchain_ollama import ChatOllama
 
 from locket.config import Settings
-from locket.llm import DEFAULT_LOCAL_TEXT_MODEL, get_chat_model, local_model_name, resolve_backend
+from locket.llm import (
+    DEFAULT_LOCAL_TEXT_MODEL,
+    get_chat_model,
+    local_model_name,
+    model_name,
+    resolve_backend,
+)
 
 
 def _settings(*, api_key: str | None) -> Settings:
@@ -97,3 +103,37 @@ def test_get_chat_model_anthropic_backend_uses_temperature_zero_for_determinism(
     monkeypatch.setenv("LOCKET_LLM_BACKEND", "anthropic")
     model = get_chat_model("extraction_default", _settings(api_key=None))
     assert model.temperature == 0
+
+
+# ---------------------------------------------------------------------------
+# model_name -- same role/backend resolution as get_chat_model, without constructing a
+# real client (locket stats's per-run JSONL capture, cli.py's _cmd_pipeline_run)
+# ---------------------------------------------------------------------------
+
+
+def test_model_name_anthropic_backend_matches_get_chat_models_model_id(monkeypatch):
+    monkeypatch.setenv("LOCKET_LLM_BACKEND", "anthropic")
+    settings = _settings(api_key=None)
+    assert model_name("extraction_default", settings) == "claude-haiku-4-5"
+    assert model_name("extraction_escalation", settings) == "claude-sonnet-5"
+    assert get_chat_model("extraction_default", settings).model == model_name("extraction_default", settings)
+
+
+def test_model_name_ollama_backend_returns_local_model_name(monkeypatch):
+    monkeypatch.setenv("LOCKET_LLM_BACKEND", "ollama")
+    monkeypatch.setenv("LOCKET_LOCAL_MODEL", "qwen2.5:3b-instruct")
+    assert model_name("extraction_default", _settings(api_key=None)) == "qwen2.5:3b-instruct"
+
+
+def test_model_name_ollama_backend_ignores_role_validity(monkeypatch):
+    """Unlike the anthropic branch, the ollama branch never validates `role` against
+    _ANTHROPIC_MODEL_IDS -- same asymmetry as get_chat_model's own two branches."""
+    monkeypatch.setenv("LOCKET_LLM_BACKEND", "ollama")
+    monkeypatch.delenv("LOCKET_LOCAL_MODEL", raising=False)
+    assert model_name("not_a_real_role", _settings(api_key=None)) == DEFAULT_LOCAL_TEXT_MODEL
+
+
+def test_model_name_unknown_role_on_anthropic_backend_raises(monkeypatch):
+    monkeypatch.setenv("LOCKET_LLM_BACKEND", "anthropic")
+    with pytest.raises(ValueError, match="unknown role"):
+        model_name("not_a_real_role", _settings(api_key=None))

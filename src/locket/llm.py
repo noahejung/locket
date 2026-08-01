@@ -120,6 +120,23 @@ def local_model_name() -> str:
     return os.environ.get("LOCKET_LOCAL_MODEL", DEFAULT_LOCAL_TEXT_MODEL)
 
 
+def model_name(role: str, settings: Settings) -> str:
+    """The concrete model identifier `get_chat_model(role, settings)` would construct,
+    without constructing a real client -- `locket stats`'s per-run JSONL capture (cli.py's
+    `_cmd_pipeline_run`) needs a "backend+model" string to record per run, and building a
+    real ChatAnthropic/ChatOllama just to read its `.model` attribute back off would pay a
+    client-construction cost (and, on the anthropic branch, requires nothing further but is
+    still wasted work) for a value this module already knows how to compute directly. Same
+    role/backend resolution as get_chat_model -- kept in sync by sharing resolve_backend
+    and _ANTHROPIC_MODEL_IDS rather than re-deriving either."""
+    backend = resolve_backend(settings)
+    if backend == "anthropic":
+        if role not in _ANTHROPIC_MODEL_IDS:
+            raise ValueError(f"unknown role {role!r} -- not in {sorted(_ANTHROPIC_MODEL_IDS)}")
+        return _ANTHROPIC_MODEL_IDS[role]
+    return local_model_name()
+
+
 def get_chat_model(role: str, settings: Settings) -> Any:
     """The bare LangChain chat model for `role` (one of `_ANTHROPIC_MODEL_IDS`'s keys),
     backend-selected per `resolve_backend(settings)`. Callers attach
@@ -165,5 +182,6 @@ __all__ = [
     "get_chat_model",
     "get_default_chat_model",
     "local_model_name",
+    "model_name",
     "resolve_backend",
 ]
