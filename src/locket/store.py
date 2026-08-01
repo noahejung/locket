@@ -130,7 +130,7 @@ class Store:
         if not items:
             return 0
         inserted = 0
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             for item in items:
                 cur.execute(
                     """
@@ -150,7 +150,6 @@ class Store:
                     ),
                 )
                 inserted += cur.rowcount
-        self._conn.commit()
         return inserted
 
     # ---- facts --------------------------------------------------------------------
@@ -161,7 +160,7 @@ class Store:
         no new rows anywhere."""
         stmt_hash = hashlib.md5(fact.statement.encode()).hexdigest()
         body = fact.model_dump(mode="json")
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO facts (kind, body, statement, confidence, happened_at,
@@ -192,13 +191,11 @@ class Store:
                     """,
                     (fact_id, json.dumps(body)),
                 )
-                self._conn.commit()
                 return fact_id
 
             # Conflict: statement already exists — return its id, write nothing new.
             cur.execute("SELECT id FROM facts WHERE hash = %s", (stmt_hash,))
             existing = cur.fetchone()
-        self._conn.commit()
         return str(existing[0])
 
     def update_fact(self, fact_id: str, *, invalid_at: datetime | None = None, **changes: Any) -> None:
@@ -214,7 +211,7 @@ class Store:
         if not all_changes:
             return
 
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute("SELECT * FROM facts WHERE id = %s", (fact_id,))
             colnames = [d.name for d in cur.description]
             prev_row = cur.fetchone()
@@ -234,7 +231,6 @@ class Store:
                 "INSERT INTO fact_history (fact_id, event, prev, next) VALUES (%s, %s, %s, %s)",
                 (fact_id, event, json.dumps(_jsonable(prev)), json.dumps(_jsonable(all_changes))),
             )
-        self._conn.commit()
 
     def search_facts(
         self,
@@ -262,7 +258,7 @@ class Store:
             LIMIT %s
         """
         params.extend([Vector(embedding), limit])
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
@@ -284,13 +280,13 @@ class Store:
             LIMIT %s
         """
         params.append(limit)
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
         return [_row_to_fact(r) for r in rows]
 
     def get_facts_for_entity(self, entity_id: str) -> list[FactRow]:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT {", ".join(_FACT_COLUMNS)}
@@ -310,25 +306,23 @@ class Store:
 
         No unique DB constraint on (name, kind) — upsert semantics live here in application
         code, matching the plan's `upsert_entity(name, kind, embedding) -> str` signature."""
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 "SELECT id FROM entities WHERE name = %s AND kind = %s LIMIT 1",
                 (name, kind),
             )
             existing = cur.fetchone()
             if existing is not None:
-                self._conn.commit()
                 return str(existing[0])
             cur.execute(
                 "INSERT INTO entities (name, kind, embedding) VALUES (%s, %s, %s) RETURNING id",
                 (name, kind, Vector(embedding)),
             )
             new_id = cur.fetchone()[0]
-        self._conn.commit()
         return str(new_id)
 
     def nearest_entities(self, embedding: list[float], k: int = 15) -> list[EntityRow]:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, name, kind, aliases, 1 - (embedding <=> %s) AS similarity
@@ -351,13 +345,13 @@ class Store:
             query += " WHERE kind = %s"
             params.append(kind)
         query += " ORDER BY name"
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
         return [EntityCard(id=str(r[0]), name=r[1], kind=r[2], aliases=list(r[3] or [])) for r in rows]
 
     def get_entity(self, entity_id: str) -> EntityCard | None:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute("SELECT id, name, kind, aliases FROM entities WHERE id = %s", (entity_id,))
             row = cur.fetchone()
         if row is None:
@@ -367,7 +361,7 @@ class Store:
     def add_entity_alias(self, entity_id: str, alias: str) -> None:
         """Append `alias` to an entity's aliases array, idempotently (no duplicate if the
         alias is already present)."""
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE entities SET aliases = array_append(aliases, %s)
@@ -375,10 +369,9 @@ class Store:
                 """,
                 (alias, entity_id, alias),
             )
-        self._conn.commit()
 
     def find_entity_by_alias(self, alias: str) -> str | None:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute("SELECT id FROM entities WHERE %s = ANY(aliases) LIMIT 1", (alias,))
             row = cur.fetchone()
         return str(row[0]) if row is not None else None
@@ -386,7 +379,7 @@ class Store:
     # ---- merge_proposals (entity-resolution confirm queue, Task 14) -----------------
 
     def add_merge_proposal(self, mention: str, candidate_entity_id: str, evidence: str, score: float) -> str:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO merge_proposals (mention, candidate_entity_id, evidence, score)
@@ -396,11 +389,10 @@ class Store:
                 (mention, candidate_entity_id, evidence, score),
             )
             new_id = cur.fetchone()[0]
-        self._conn.commit()
         return str(new_id)
 
     def pending_merge_proposals(self) -> list[MergeProposal]:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT mp.id, mp.mention, mp.candidate_entity_id, e.name, mp.evidence, mp.score, mp.status
@@ -425,12 +417,11 @@ class Store:
         ]
 
     def resolve_merge_proposal(self, proposal_id: str, *, accept: bool) -> None:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 "UPDATE merge_proposals SET status = %s WHERE id = %s",
                 ("confirmed" if accept else "rejected", proposal_id),
             )
-        self._conn.commit()
 
     # ---- profiles (synthesized living profile, Task 18) ------------------------------
 
@@ -438,17 +429,16 @@ class Store:
         """Insert a new versioned profile snapshot. Never mutates a prior row -- callers
         (profile.synthesize) decide whether a new snapshot is warranted (e.g. skip when
         fact_count hasn't changed since the latest one)."""
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO profiles (body, fact_count) VALUES (%s, %s) RETURNING id",
                 (body, fact_count),
             )
             new_id = cur.fetchone()[0]
-        self._conn.commit()
         return str(new_id)
 
     def get_latest_profile(self) -> ProfileRow | None:
-        with self._conn.cursor() as cur:
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
                 "SELECT id, body, fact_count, created_at FROM profiles ORDER BY created_at DESC LIMIT 1"
             )

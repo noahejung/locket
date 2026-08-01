@@ -294,6 +294,58 @@ def test_list_entities_and_get_entity(store):
     assert store.get_entity("00000000-0000-0000-0000-000000000000") is None
 
 
+def test_write_failure_rolls_back_and_leaves_the_connection_usable(store):
+    """Regression (fix-wave-1 item 3, MUST-FIX #1 of the code-quality review): before this
+    fix, no Store method ever called rollback() -- Postgres aborts the whole transaction on
+    any statement error, and every later statement on that same connection fails with
+    "current transaction is aborted, commands ignored until end of transaction block" until
+    someone calls rollback(). Worst surface: the MCP server holds one Store/connection for
+    its entire process lifetime, so a single bad write would poison every subsequent tool
+    call -- the exact MCP-server-poisoning scenario the review named. `add_merge_proposal`
+    references a non-existent candidate_entity_id, which the schema enforces with a REFERENCES
+    entities(id) foreign key -- a real constraint violation, not a contrived error."""
+    import psycopg
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        store.add_merge_proposal(
+            "Ghost", "00000000-0000-0000-0000-000000000000", evidence="x", score=0.5
+        )
+
+    # The connection must still be usable for a totally unrelated subsequent call -- this is
+    # what "poisoned" would mean if the fix were absent: every call below would raise
+    # "current transaction is aborted" instead of succeeding.
+    entity_id = store.upsert_entity("Sarah", "person", _vec(1.0))
+    assert entity_id
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(kind=FactKind.habit, statement="Sarah runs every morning", confidence=0.8, provenance=[raw.id])
+    fact_id = store.add_fact(fact, embedding=_vec(2.0))
+    assert fact_id
+
+
+def test_read_failure_rolls_back_and_leaves_the_connection_usable(store):
+    """Same poisoning scenario, but for a READ -- per the review's "reads get
+    rollback-on-error protection too" requirement. Must be a genuine SERVER-side failure
+    (mid-SELECT, after a real round-trip), not a client-side adaptation error caught before
+    any query is sent -- a wrong-dimension embedding is the real thing: pgvector's `<=>`
+    operator rejects a query vector whose dimensionality doesn't match the indexed column
+    (`vector(384)`) server-side, exactly like a real caller bug would. Needs at least one
+    real row present -- against an empty table the `<=>` operator is never actually
+    invoked, so the dimension check never fires."""
+    import psycopg
+
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(kind=FactKind.preference, statement="John prefers tea", confidence=0.8, provenance=[raw.id])
+    store.add_fact(fact, embedding=_vec(1.0))
+
+    with pytest.raises(psycopg.Error):
+        store.search_facts([0.0, 1.0], limit=5)  # 2 dims, column is vector(384)
+
+    results = store.search_facts(_vec(1.0), limit=5)
+    assert len(results) == 1  # the call itself must succeed, not raise
+
+
 def test_save_profile_and_get_latest_profile(store):
     assert store.get_latest_profile() is None
 
