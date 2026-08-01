@@ -419,12 +419,19 @@ def _cmd_profile_build(store: Store, *, model: Any | None) -> int:
 
 
 def _cmd_serve(settings: Settings) -> int:
+    """Unlike every other subcommand, `serve` bypasses main()'s shared owns_store
+    try/finally entirely (it has no injectable `store=` seam -- a real serve blocks on
+    stdio for the process lifetime) -- so it needs its own try/finally for the same
+    close-on-every-exit-path guarantee, including when `mcp.run()` itself raises."""
     from locket.mcp_server import build_server
 
     store = Store(settings.db_url)
-    mcp = build_server(store)
-    mcp.run()
-    return 0
+    try:
+        mcp = build_server(store)
+        mcp.run()
+        return 0
+    finally:
+        store.close()
 
 
 # ---------------------------------------------------------------------------

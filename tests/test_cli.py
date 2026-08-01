@@ -325,6 +325,35 @@ def test_eval_extraction_json_output_has_expected_shape(store, capsys):
 
 
 # ---------------------------------------------------------------------------
+# serve -- must close its Store on every exit path (fix-wave-2 item 10)
+# ---------------------------------------------------------------------------
+
+
+def test_serve_closes_store_even_if_mcp_run_raises(monkeypatch):
+    """`serve` is main()'s one command that bypasses the shared owns_store try/finally
+    below (it never takes an injectable `store=` -- a real serve blocks on stdio, so tests
+    can't pass one in) -- before this fix, _cmd_serve had no try/finally of its own either,
+    so its Store/connection leaked on every exit path, including this exception one."""
+    closed = []
+
+    class _FakeStore:
+        def close(self):
+            closed.append(True)
+
+    class _FakeMCP:
+        def run(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("locket.cli.Store", lambda url: _FakeStore())
+    monkeypatch.setattr("locket.mcp_server.build_server", lambda store: _FakeMCP())
+
+    with pytest.raises(RuntimeError, match="boom"):
+        main(["serve"])
+
+    assert closed == [True]
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
