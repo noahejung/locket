@@ -113,3 +113,40 @@ def test_well_formed_file_reports_zero_type_warnings():
     warnings: list[str] = []
     list(parse_sms_xml(FIX, warnings=warnings))
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# XXE regression (fix-wave-2 item 8) -- parse_sms_xml's etree.iterparse call passes
+# resolve_entities=False specifically so a crafted export can't read local files via a
+# DOCTYPE-declared external entity. Pins the CURRENT, live-verified behavior (2026-07-31):
+# lxml refuses to resolve the reference and raises XMLSyntaxError rather than substituting
+# file content. "Neutralized" here means the referenced file's content never reaches a
+# RawItem or an exception message -- not that parsing degrades gracefully (a real `ingest`
+# run over a file shaped like this would still surface the raised exception, same as any
+# other corrupt-file error).
+# ---------------------------------------------------------------------------
+
+
+def test_xxe_external_entity_never_leaks_file_contents(tmp_path):
+    from lxml import etree
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET SENTINEL VALUE", encoding="utf-8")
+    xml = (
+        '<?xml version="1.0"?>'
+        f'<!DOCTYPE smses [<!ENTITY xxe SYSTEM "file:///{secret.as_posix()}">]>'
+        '<smses><sms protocol="0" address="+15550001111" date="1700000000000" type="1" '
+        'body="leaked: &xxe;" contact_name="Attacker" /></smses>'
+    )
+    p = tmp_path / "xxe.xml"
+    p.write_text(xml, encoding="utf-8")
+
+    try:
+        items = list(parse_sms_xml(p))
+    except etree.XMLSyntaxError as exc:
+        # Neutralized by refusal -- the secret must not even leak into the error message.
+        assert "TOP SECRET SENTINEL VALUE" not in str(exc)
+    else:
+        # If a future lxml version degrades gracefully instead of raising, the secret must
+        # still never appear anywhere in the parsed output.
+        assert all("TOP SECRET SENTINEL VALUE" not in (i.text or "") for i in items)
