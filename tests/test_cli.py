@@ -25,7 +25,7 @@ from locket.extraction.schemas import ExtractedFact, ExtractionResult
 from locket.models import FactKind
 from locket.store import Store
 
-DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@localhost:5432/locket")
+DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@127.0.0.1:5432/locket")
 DEMO_CORPUS = Path(__file__).parent.parent / "demo_corpus"
 
 pytestmark = pytest.mark.db

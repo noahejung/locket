@@ -103,7 +103,9 @@ Stated plainly, not hand-waved:
 
 - **Storage is fully local.** Postgres+pgvector runs in your own Docker
   container. Nothing about your facts, entities, or profile is sent
-  anywhere except the specific API calls described below.
+  anywhere except the specific API calls described below. The container's
+  port binds to `127.0.0.1` only (see `docker-compose.yml`) — never reachable
+  from another device on your LAN.
 - **Text extraction uses the Claude API.** Message/photo-OCR text is sent to
   Anthropic under their no-training API terms to extract structured facts
   (`claude-haiku-4-5`, escalating to `claude-sonnet-5` on repeated

@@ -6,7 +6,7 @@ def test_settings_defaults(monkeypatch):
     monkeypatch.delenv("LOCKET_CORPUS_DIR", raising=False)
     monkeypatch.delenv("LOCKET_OLLAMA_MODEL", raising=False)
     s = Settings.load()
-    assert s.db_url == "postgresql://locket:locket@localhost:5432/locket"
+    assert s.db_url == "postgresql://locket:locket@127.0.0.1:5432/locket"
     assert s.ollama_model == "qwen3-vl:8b"
 
 

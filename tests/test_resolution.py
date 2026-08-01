@@ -26,7 +26,7 @@ from locket.resolution import (
 )
 from locket.store import EntityRow, Store
 
-DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@localhost:5432/locket")
+DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@127.0.0.1:5432/locket")
 
 
 # ---------------------------------------------------------------------------

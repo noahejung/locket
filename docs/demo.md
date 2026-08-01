@@ -68,7 +68,7 @@ client in the loop, run the same lookup directly:
 ```bash
 uv run python -c "
 from locket.store import Store
-store = Store('postgresql://locket:locket@localhost:5432/locket')
+store = Store('postgresql://locket:locket@127.0.0.1:5432/locket')
 rows = store.search_facts([0.0]*384, limit=5)   # replace with a real query embedding
 for r in rows:
     print(r.statement, '->', r.provenance)

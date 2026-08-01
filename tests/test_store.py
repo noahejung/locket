@@ -15,7 +15,7 @@ from locket.store import Store
 
 pytestmark = pytest.mark.db
 
-DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@localhost:5432/locket")
+DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@127.0.0.1:5432/locket")
 
 
 def _vec(seed: float, dims: int = 384) -> list[float]:

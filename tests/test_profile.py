@@ -20,7 +20,7 @@ from locket.models import Fact, FactKind
 from locket.profile import SECTION_ORDER, SectionRendering, synthesize
 from locket.store import Store
 
-DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@localhost:5432/locket")
+DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@127.0.0.1:5432/locket")
 
 pytestmark = pytest.mark.db
 

@@ -56,7 +56,7 @@ from pathlib import Path
 from locket.store import Store
 from evals.extraction_eval import run_extraction_pipeline, load_gold, score
 
-store = Store('postgresql://locket:locket@localhost:5432/locket')
+store = Store('postgresql://locket:locket@127.0.0.1:5432/locket')
 with store._conn.cursor() as cur:
     cur.execute('TRUNCATE raw_items, facts, entities, fact_history, merge_proposals RESTART IDENTITY CASCADE')
 store._conn.commit()
@@ -121,7 +121,7 @@ from locket.store import Store
 from evals.extraction_eval import run_extraction_pipeline
 from evals.rag_eval import load_questions, run_rag_eval
 
-store = Store('postgresql://locket:locket@localhost:5432/locket')
+store = Store('postgresql://locket:locket@127.0.0.1:5432/locket')
 with store._conn.cursor() as cur:
     cur.execute('TRUNCATE raw_items, facts, entities, fact_history, merge_proposals RESTART IDENTITY CASCADE')
 store._conn.commit()

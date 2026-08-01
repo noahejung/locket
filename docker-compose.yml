@@ -3,9 +3,12 @@ services:
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: locket
-      POSTGRES_PASSWORD: locket
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-locket}
       POSTGRES_DB: locket
-    ports: ["5432:5432"]
+    # Loopback-only -- Docker's no-host-IP form ("5432:5432") binds 0.0.0.0, reachable from
+    # any device on the same LAN with the (public, hardcoded-in-this-repo) locket/locket
+    # credentials. Fix-wave-1 HIGH finding (2026-07-31 security audit).
+    ports: ["127.0.0.1:5432:5432"]
     shm_size: 1g
     volumes:
       - pgdata:/var/lib/postgresql/data
