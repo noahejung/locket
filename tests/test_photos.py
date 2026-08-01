@@ -93,3 +93,47 @@ def test_duplicate_content_dedupes_to_one_raw_item():
 def test_all_items_are_photo_kind():
     items = list(parse_photos(FIX))
     assert all(i.source == SourceKind.photo for i in items)
+
+
+# ---------------------------------------------------------------------------
+# Per-file resilience (fix-wave-1 item 6) -- a corrupt image/sidecar must not abort the
+# whole ingest; mirrors cli.py's existing vision-LLM-tail per-item catch-and-degrade pattern.
+# ---------------------------------------------------------------------------
+
+
+def test_corrupt_image_and_truncated_sidecar_are_skipped_with_warnings_run_continues(tmp_path):
+    from PIL import Image
+
+    d = tmp_path / "photos"
+    d.mkdir()
+    # A totally unreadable "image" -- zero bytes, no sidecar. Genuinely corrupt: nothing
+    # usable can be extracted, so it must be skipped entirely, not yielded with null fields.
+    (d / "broken.jpg").write_bytes(b"")
+    # A valid image whose sidecar JSON is truncated mid-object. The photo itself is fine --
+    # only the sidecar step fails -- so it must still be kept (falls through to EXIF, which
+    # this file also lacks, so ts ends up None, same as "no sidecar existed at all").
+    Image.new("RGB", (10, 10), color="blue").save(d / "ok.jpg", format="JPEG")
+    (d / "ok.jpg.supplemental-metadata.json").write_text('{"photoTakenTime": {"time', encoding="utf-8")
+    # A genuinely fine photo alongside the broken ones -- proves the run continues past
+    # both error cases above rather than raising and losing every remaining file. Distinct
+    # pixel content from "ok.jpg" above -- else the adapter's own sha256 content-dedup
+    # would correctly (and confusingly, for this test) treat them as the same photo.
+    Image.new("RGB", (10, 10), color="green").save(d / "fine.jpg", format="JPEG")
+
+    warnings: list[str] = []
+    items = list(parse_photos(d, warnings=warnings))  # must not raise
+
+    names = {Path(i.media_path).name for i in items}
+    assert "broken.jpg" not in names
+    assert "ok.jpg" in names
+    assert "fine.jpg" in names
+
+    assert len(warnings) == 2
+    assert any("broken.jpg" in w for w in warnings)
+    assert any("ok.jpg" in w or "supplemental-metadata" in w for w in warnings)
+
+
+def test_well_formed_directory_reports_zero_resilience_warnings():
+    warnings: list[str] = []
+    list(parse_photos(FIX, warnings=warnings))
+    assert warnings == []

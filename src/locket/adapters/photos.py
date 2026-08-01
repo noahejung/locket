@@ -101,11 +101,23 @@ def _from_sidecar(sidecar: Path) -> tuple[datetime | None, float | None, float |
     return ts, lat, lon
 
 
-def parse_photos(root: Path, source_tz: tzinfo | None = None) -> Iterator[RawItem]:
+def parse_photos(
+    root: Path, source_tz: tzinfo | None = None, *, warnings: list[str] | None = None
+) -> Iterator[RawItem]:
     """`source_tz` is the timezone EXIF DateTimeOriginal timestamps were written in --
     defaults to the system's local timezone (`_local_tz()`) since that's the capturing
     device's own clock in the overwhelmingly common case. Sidecar (Google Takeout)
-    timestamps are unaffected -- they're already epoch/UTC, not wall-clock text."""
+    timestamps are unaffected -- they're already epoch/UTC, not wall-clock text.
+
+    `warnings`, if given, gets one message appended per file this pass couldn't fully
+    process -- mirrors cli.py's vision-LLM-tail per-item catch-and-degrade pattern (one bad
+    file logs and is skipped; the run continues). Two distinct failure shapes:
+      - the image itself is unreadable (0-byte, truncated, not actually an image) -- nothing
+        usable can be extracted at all, so the whole file is skipped (no RawItem yielded).
+      - only its Takeout sidecar JSON is corrupt/truncated -- the photo itself is still
+        real, so it's kept, falling through to EXIF (or ts=None, exactly as if no sidecar
+        existed) rather than losing the photo over a metadata-file problem.
+    """
     tz = source_tz if source_tz is not None else _local_tz()
     seen_hashes: set[str] = set()
     # Shallower paths win dedup ties — Takeout nests album *copies* one level
@@ -116,7 +128,11 @@ def parse_photos(root: Path, source_tz: tzinfo | None = None) -> Iterator[RawIte
         key=lambda p: (len(p.relative_to(root).parts), str(p)),
     )
     for path in media_files:
-        content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        try:
+            content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            _warn(warnings, f"unreadable file {path.name}: {exc}")
+            continue
         if content_hash in seen_hashes:
             continue  # Takeout duplicates the same photo across album exports
         seen_hashes.add(content_hash)
@@ -128,12 +144,20 @@ def parse_photos(root: Path, source_tz: tzinfo | None = None) -> Iterator[RawIte
 
         sidecar = find_sidecar(path)
         if sidecar is not None:
-            ts, lat, lon = _from_sidecar(sidecar)
-            if ts is not None:
-                taken_source = "sidecar"
+            try:
+                ts, lat, lon = _from_sidecar(sidecar)
+            except (OSError, ValueError) as exc:
+                _warn(warnings, f"corrupt sidecar {sidecar.name}: {exc}")
+            else:
+                if ts is not None:
+                    taken_source = "sidecar"
 
         if ts is None:
-            exif_ts, exif_lat, exif_lon = _from_exif(path, tz)
+            try:
+                exif_ts, exif_lat, exif_lon = _from_exif(path, tz)
+            except (OSError, ValueError) as exc:
+                _warn(warnings, f"corrupt/unreadable image {path.name}: {exc}")
+                continue  # nothing usable to extract from this file -- skip it, run continues
             if exif_ts is not None:
                 ts = exif_ts
                 taken_source = "exif"
@@ -148,6 +172,11 @@ def parse_photos(root: Path, source_tz: tzinfo | None = None) -> Iterator[RawIte
             media_path=str(path.relative_to(root)),
             meta={"lat": lat, "lon": lon, "taken_source": taken_source},
         )
+
+
+def _warn(warnings: list[str] | None, message: str) -> None:
+    if warnings is not None:
+        warnings.append(message)
 
 
 register("dir:photos", parse_photos)

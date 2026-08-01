@@ -56,7 +56,7 @@ def _ingest_source(path: Path) -> tuple[list[RawItem], list[str]]:
     if path.is_dir():
         if any(path.glob("message_*.json")):
             return list(parse_instagram_thread(path)), warnings
-        return list(parse_photos(path)), warnings
+        return list(parse_photos(path, warnings=warnings)), warnings
     suffix = path.suffix.lower()
     if suffix == ".txt":
         return list(parse_whatsapp(path, thread=path.stem, warnings=warnings)), warnings
@@ -97,7 +97,7 @@ def _discover_corpus_sources(corpus_dir: Path) -> tuple[list[tuple[str, list[Raw
 
     photos_dir = corpus_dir / "photos"
     if photos_dir.is_dir():
-        groups.append(("photos", list(parse_photos(photos_dir))))
+        groups.append(("photos", list(parse_photos(photos_dir, warnings=warnings))))
 
     return groups, warnings
 
