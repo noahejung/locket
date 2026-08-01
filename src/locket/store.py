@@ -250,6 +250,39 @@ class Store:
                 (fact_id, event, json.dumps(_jsonable(prev)), json.dumps(_jsonable(all_changes))),
             )
 
+    def get_fact_by_prefix(self, prefix: str) -> FactRow | None:
+        """Resolve a short id prefix back to its full FactRow.
+
+        Fix-wave-2 item 12 (citation-id consistency): profile.py deliberately truncates
+        citations to the first 8 hex characters for readable prose (`[fact:3fa85f64]`,
+        docs/architecture.md), while every MCP tool (search_memories, answer_question,
+        get_person, query_timeline) returns/expects full ids -- nothing could resolve a
+        profile citation back to its fact. This closes that gap at the store layer, kept
+        deliberately as infrastructure rather than a wired MCP tool (out of this hygiene
+        pass's scope).
+
+        Collision bound: 8 hex chars is 32 bits of prefix entropy (2**32 ≈ 4.3 billion
+        possible prefixes). By the birthday-paradox approximation, 50% odds of ANY
+        collision among all stored prefixes arrives around 1.1774 * sqrt(2**32) ≈ 77,000
+        facts; at a more realistic 1,000-fact personal store the odds of any collision at
+        all are already only ~0.01% (1000*999 / (2 * 2**32)). On an actual collision this
+        returns one match deterministically (`ORDER BY id LIMIT 1`), not every match --
+        acceptable at these odds, but not a guarantee to lean on if the fact count ever
+        gets large enough to matter."""
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {", ".join(_FACT_COLUMNS)}
+                FROM facts
+                WHERE starts_with(id::text, %s)
+                ORDER BY id
+                LIMIT 1
+                """,
+                (prefix,),
+            )
+            row = cur.fetchone()
+        return _row_to_fact(row) if row is not None else None
+
     def search_facts(
         self,
         embedding: list[float],

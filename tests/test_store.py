@@ -387,6 +387,26 @@ def test_fact_counts_by_entity_empty_input_short_circuits(store):
     assert store.fact_counts_by_entity([]) == {}
 
 
+def test_get_fact_by_prefix_resolves_a_profile_style_short_citation(store):
+    """Fix-wave-2 item 12: profile.py cites facts by 8-hex id prefix (`[fact:3fa85f64]`),
+    but nothing could resolve that back to the full fact -- MCP tools all return/expect
+    full ids instead. This is the lookup path that closes the gap."""
+    raw = _raw(0)
+    store.add_raw_items([raw])
+    fact = Fact(kind=FactKind.habit, statement="Sarah runs every morning", confidence=0.8, provenance=[raw.id])
+    fact_id = store.add_fact(fact, _vec(1.0))
+
+    found = store.get_fact_by_prefix(fact_id[:8])
+
+    assert found is not None
+    assert found.id == fact_id
+    assert found.statement == "Sarah runs every morning"
+
+
+def test_get_fact_by_prefix_unknown_prefix_returns_none(store):
+    assert store.get_fact_by_prefix("00000000") is None
+
+
 def test_get_facts_for_entity_valid_at_excludes_expired_facts(store):
     raw = _raw(0)
     store.add_raw_items([raw])
