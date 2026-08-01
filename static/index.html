@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>locket</title>
+<style>
+  /* self-contained: no CDN, no webfonts, no build step -- must render on a phone browser
+     over the tailnet with zero internet access. system-ui font stack only. */
+  :root {
+    color-scheme: light dark;
+    --bg: #111214;
+    --panel: #1b1d21;
+    --text: #e7e7ea;
+    --muted: #93969e;
+    --accent: #5b8cff;
+    --user-bubble: #2a3a5f;
+    --assistant-bubble: #232529;
+    --chip-bg: #33405e;
+    --chip-bg-active: #5b8cff;
+    --error: #ff6b6b;
+    --border: #2c2e33;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+    font-size: 16px; /* stays >=16px on purpose -- iOS Safari zooms in on input focus below 16px */
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+  }
+  header {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  header p {
+    margin: 0.15rem 0 0;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .latency-note {
+    margin: 0.5rem 1rem 0;
+    padding: 0.5rem 0.75rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    flex: 0 0 auto;
+  }
+  #chat {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .bubble {
+    max-width: 88%;
+    padding: 0.6rem 0.8rem;
+    border-radius: 0.9rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .bubble.user {
+    align-self: flex-end;
+    background: var(--user-bubble);
+    border-bottom-right-radius: 0.2rem;
+  }
+  .bubble.assistant {
+    align-self: flex-start;
+    background: var(--assistant-bubble);
+    border-bottom-left-radius: 0.2rem;
+  }
+  .bubble.thinking {
+    align-self: flex-start;
+    background: var(--assistant-bubble);
+    color: var(--muted);
+    font-style: italic;
+  }
+  .bubble.error {
+    align-self: flex-start;
+    background: var(--assistant-bubble);
+    color: var(--error);
+    border: 1px solid var(--error);
+  }
+  .chip {
+    display: inline-block;
+    margin: 0 0.15rem;
+    padding: 0.1rem 0.5rem;
+    font-size: 0.75rem;
+    border: none;
+    border-radius: 1rem;
+    background: var(--chip-bg);
+    color: var(--text);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .chip.open {
+    background: var(--chip-bg-active);
+  }
+  .cite-detail {
+    margin: 0.4rem 0 0.1rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .cite-detail .cite-meta {
+    margin-top: 0.3rem;
+    font-size: 0.72rem;
+    opacity: 0.8;
+  }
+  .cite-detail[hidden] { display: none; }
+  form#ask-form {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.65rem;
+    padding-bottom: calc(0.65rem + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #question {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.65rem 0.8rem;
+    border-radius: 1.5rem;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 16px;
+  }
+  #question:focus { outline: 1px solid var(--accent); }
+  button#ask-btn {
+    flex: 0 0 auto;
+    padding: 0.65rem 1.1rem;
+    border-radius: 1.5rem;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button#ask-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .empty-state {
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-align: center;
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>locket</h1>
+  <p>ask about your life -- answers cite the exact source facts</p>
+</header>
+
+<div class="latency-note" id="latency-note">
+  heads up: on the local model, answers can take 30-90 seconds. that's normal,
+  not stuck -- the "thinking..." message below counts up in real time so you
+  can see it's still working.
+</div>
+
+<div id="chat">
+  <div class="empty-state" id="empty-state">ask a question below to get started.</div>
+</div>
+
+<form id="ask-form" autocomplete="off">
+  <input id="question" name="question" type="text" placeholder="ask locket something..." maxlength="500" required>
+  <button id="ask-btn" type="submit">ask</button>
+</form>
+
+<script>
+(function () {
+  "use strict";
+
+  var chat = document.getElementById("chat");
+  var emptyState = document.getElementById("empty-state");
+  var form = document.getElementById("ask-form");
+  var input = document.getElementById("question");
+  var askBtn = document.getElementById("ask-btn");
+
+  // id -> already-fetched fact dict, so re-tapping the same citation chip never re-fetches.
+  var factCache = {};
+
+  function scrollToBottom() {
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function addBubble(text, cls) {
+    if (emptyState) { emptyState.remove(); emptyState = null; }
+    var el = document.createElement("div");
+    el.className = "bubble " + cls;
+    el.textContent = text;
+    chat.appendChild(el);
+    scrollToBottom();
+    return el;
+  }
+
+  // citations look like [fact:<8+ hex/dash chars>] -- mirrors mcp_server.py's _CITE_RE.
+  var CITE_RE = /\[fact:([0-9a-fA-F-]{8,})\]/g;
+
+  function renderAnswer(container, text, facts) {
+    // Index the facts the server already told us were cited -- avoids a round trip for
+    // the common case where every cited fact came back in the /api/ask response itself.
+    var known = {};
+    (facts || []).forEach(function (f) { known[f.id] = f; });
+
+    var lastIndex = 0;
+    var match;
+    CITE_RE.lastIndex = 0;
+    while ((match = CITE_RE.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        container.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      appendCitationChip(container, match[1], known[match[1]]);
+      lastIndex = CITE_RE.lastIndex;
+    }
+    if (lastIndex < text.length) {
+      container.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+  }
+
+  function appendCitationChip(container, factId, knownFact) {
+    var id8 = factId.slice(0, 8);
+    if (knownFact) { factCache[id8] = knownFact; }
+
+    var chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = "[fact:" + id8 + "]";
+
+    var detail = document.createElement("div");
+    detail.className = "cite-detail";
+    detail.hidden = true;
+
+    chip.addEventListener("click", function () {
+      var opening = detail.hidden;
+      detail.hidden = !opening;
+      chip.classList.toggle("open", opening);
+      if (opening) { loadCiteDetail(id8, detail); }
+    });
+
+    container.appendChild(chip);
+    container.appendChild(detail);
+  }
+
+  function renderFactDetail(detail, fact) {
+    detail.textContent = "";
+    var stmt = document.createElement("div");
+    stmt.textContent = fact.statement;
+    detail.appendChild(stmt);
+
+    var meta = document.createElement("div");
+    meta.className = "cite-meta";
+    var bits = [fact.kind];
+    if (fact.happened_at) { bits.push(fact.happened_at); }
+    bits.push("confidence " + Math.round(fact.confidence * 100) + "%");
+    meta.textContent = bits.join(" · ");
+    detail.appendChild(meta);
+  }
+
+  function loadCiteDetail(id8, detail) {
+    if (factCache[id8]) {
+      renderFactDetail(detail, factCache[id8]);
+      return;
+    }
+    detail.textContent = "loading source...";
+    fetch("/api/fact/" + encodeURIComponent(id8))
+      .then(function (resp) {
+        if (!resp.ok) { throw new Error("not found"); }
+        return resp.json();
+      })
+      .then(function (fact) {
+        factCache[id8] = fact;
+        renderFactDetail(detail, fact);
+      })
+      .catch(function () {
+        detail.textContent = "couldn't load this source fact.";
+      });
+  }
+
+  function askQuestion(question) {
+    addBubble(question, "user");
+
+    var thinkingEl = addBubble("thinking... 0s", "thinking");
+    var startedAt = Date.now();
+    var ticker = setInterval(function () {
+      var elapsed = Math.round((Date.now() - startedAt) / 1000);
+      thinkingEl.textContent = "thinking... " + elapsed + "s";
+    }, 1000);
+
+    input.disabled = true;
+    askBtn.disabled = true;
+
+    fetch("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: question })
+    })
+      .then(function (resp) {
+        if (!resp.ok) { throw new Error("request failed (" + resp.status + ")"); }
+        return resp.json();
+      })
+      .then(function (data) {
+        clearInterval(ticker);
+        thinkingEl.remove();
+        var answerEl = addBubble("", "assistant");
+        renderAnswer(answerEl, data.answer || "(no answer)", data.facts || []);
+        scrollToBottom();
+      })
+      .catch(function (err) {
+        clearInterval(ticker);
+        thinkingEl.remove();
+        addBubble("something went wrong asking that: " + err.message, "error");
+      })
+      .finally(function () {
+        input.disabled = false;
+        askBtn.disabled = false;
+        input.focus();
+      });
+  }
+
+  form.addEventListener("submit", function (evt) {
+    evt.preventDefault();
+    var question = input.value.trim();
+    if (!question) { return; }
+    input.value = "";
+    askQuestion(question);
+  });
+})();
+</script>
+</body>
+</html>

@@ -45,6 +45,19 @@ dependencies = [
   "pyyaml>=6.0",  # evals/gold/*.yaml + questions.yaml (Tasks 15-16) -- was only a
                   # transitive dep (via langchain/huggingface_hub) before; declared
                   # explicitly since we now import it directly.
+  # Phone chat UI (locket serve-ui, setup-guide.md Part 2 Option 2). Verified live
+  # 2026-08-01 against PyPI metadata: fastapi latest is 0.141.1, requires
+  # starlette>=0.46.0 and pydantic>=2.9.0 -- both already satisfied by the versions `mcp`
+  # transitively pins in this repo's own lock (starlette 1.3.1, pydantic 2.13.4), so this
+  # adds no new transitive major version. uvicorn is already present in the lock too (as
+  # mcp's own ASGI-transport dependency, unpinned by us until now) at 0.52.0, which PyPI
+  # confirms is also current latest -- pinned explicitly here rather than left implicit,
+  # since webui.py now imports it directly (`locket serve-ui`'s `uvicorn.run(...)`).
+  # httpx (FastAPI TestClient's transport) is NOT added here -- already resolved
+  # transitively at 0.28.1 (via anthropic/mcp's own deps) and nothing in this repo imports
+  # it directly, so it stays implicit like every other transitive dep we don't touch.
+  "fastapi==0.141.1",
+  "uvicorn==0.52.0",
 ]
 
 [dependency-groups]
