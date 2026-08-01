@@ -361,18 +361,22 @@ class Store:
     def upsert_entity(self, name: str, kind: str, embedding: list[float]) -> str:
         """Insert an entity, or return the existing id for an identical (name, kind) pair.
 
-        No unique DB constraint on (name, kind) — upsert semantics live here in application
-        code, matching the plan's `upsert_entity(name, kind, embedding) -> str` signature."""
+        One atomic statement (fix-wave-2 item 11) — `entities(name, kind)` carries a UNIQUE
+        constraint (db/init.sql), and this uses ON CONFLICT ... DO UPDATE (a no-op SET,
+        just to make RETURNING fire on the pre-existing row too — DO NOTHING returns
+        nothing on conflict) instead of the prior SELECT-then-INSERT-on-miss shape. That
+        shape had a race window between the SELECT and the INSERT where two concurrent
+        callers could both see "not found" and both insert, violating the very uniqueness
+        this method promises. The embedding is intentionally NOT updated on conflict —
+        same semantics as before: whichever call inserted the row first keeps its
+        embedding."""
         with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM entities WHERE name = %s AND kind = %s LIMIT 1",
-                (name, kind),
-            )
-            existing = cur.fetchone()
-            if existing is not None:
-                return str(existing[0])
-            cur.execute(
-                "INSERT INTO entities (name, kind, embedding) VALUES (%s, %s, %s) RETURNING id",
+                """
+                INSERT INTO entities (name, kind, embedding) VALUES (%s, %s, %s)
+                ON CONFLICT (name, kind) DO UPDATE SET name = EXCLUDED.name
+                RETURNING id
+                """,
                 (name, kind, Vector(embedding)),
             )
             new_id = cur.fetchone()[0]

@@ -12,7 +12,14 @@ CREATE TABLE entities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL, kind text NOT NULL,           -- person | place | org
   aliases text[] DEFAULT '{}',
-  embedding vector(384)
+  embedding vector(384),
+  UNIQUE (name, kind)                               -- fix-wave-2 item 11: closes upsert_entity's
+    -- check-then-insert race (store.py's ON CONFLICT (name, kind) targets this). Existing
+    -- databases created before this line need it added by hand after de-duplicating any
+    -- pre-existing (name, kind) collisions (`ALTER TABLE entities ADD CONSTRAINT
+    -- entities_name_kind_key UNIQUE (name, kind);`), or simpler: recreate the dev container
+    -- (`docker compose down -v && docker compose up -d db`) -- demo-corpus data is fully
+    -- regenerable via `locket pipeline run`, so recreation is the simpler path there.
 );
 
 CREATE TABLE facts (

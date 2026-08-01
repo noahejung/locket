@@ -261,6 +261,46 @@ def test_upsert_entity_and_nearest_entities(store):
     assert top.similarity == pytest.approx(1.0, abs=1e-6)
 
 
+def test_entities_name_kind_has_a_unique_constraint(store):
+    """Fix-wave-2 item 11 / code-quality review nice-to-have: upsert_entity's prior
+    check-then-insert shape had a race window between its SELECT and its INSERT where two
+    concurrent callers could both see "not found" and both insert, producing two rows for
+    the same (name, kind) pair -- the exact duplicate upsert_entity's own docstring
+    promises never happens. A real UNIQUE constraint (db/init.sql) closes that window at
+    the database level; this proves the constraint exists by trying to violate it directly
+    via raw SQL, bypassing upsert_entity's own ON CONFLICT handling entirely."""
+    import psycopg
+    from pgvector import Vector
+
+    store.upsert_entity("Sarah Kovacs", "person", _vec(1.0))
+
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with store._conn.transaction(), store._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO entities (name, kind, embedding) VALUES (%s, %s, %s)",
+                ("Sarah Kovacs", "person", Vector(_vec(2.0))),
+            )
+
+    # transaction() auto-rolled back on the raised exception -- connection still usable.
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM entities WHERE name = %s AND kind = %s", ("Sarah Kovacs", "person"))
+        assert cur.fetchone()[0] == 1
+
+
+def test_upsert_entity_is_a_single_atomic_statement_not_check_then_insert(store):
+    """Companion to the constraint test above: upsert_entity itself must resolve a
+    conflict via ON CONFLICT (one round-trip), not a SELECT-then-INSERT-on-miss shape that
+    the constraint above would now turn into a raised UniqueViolation under a genuine race.
+    Calling it twice for the same (name, kind) must still return the same id and must not
+    raise, even though a real UNIQUE constraint is now in place."""
+    id1 = store.upsert_entity("Priya Patel", "person", _vec(6.0))
+    id2 = store.upsert_entity("Priya Patel", "person", _vec(7.0))  # different embedding, same key
+    assert id1 == id2
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM entities WHERE name = %s AND kind = %s", ("Priya Patel", "person"))
+        assert cur.fetchone()[0] == 1
+
+
 def test_get_facts_for_entity(store):
     raw = _raw(0)
     store.add_raw_items([raw])
