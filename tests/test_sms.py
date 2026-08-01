@@ -55,3 +55,61 @@ def test_null_attributes_never_crash_int_conversion(tmp_path):
     assert len(items) == 1
     assert items[0].ts is None
     assert items[0].sender is None  # contact_name was "null" too
+
+
+# ---------------------------------------------------------------------------
+# Unrecognized type/msg_box codes (fix-wave-1 item 5b) -- must be skipped with a counted
+# warning, never silently defaulted to sender="me" (misattributed authorship).
+# ---------------------------------------------------------------------------
+
+
+def test_unrecognized_sms_type_is_skipped_not_defaulted_to_me(tmp_path):
+    # type="0" is SMS Backup & Restore's "all messages" QUERY code -- it should never appear
+    # on a real per-message row, but if it (or any other stray value) does, the old code
+    # silently attributed it to "me" (direction lookup missed -> `direction == "received"`
+    # is False -> falls through to the "sent" branch's sender="me").
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<smses count="1">'
+        '<sms protocol="0" address="+15550001111" date="1700000000000" type="0" '
+        'body="weird type code" contact_name="Someone Else" />'
+        "</smses>"
+    )
+    p = tmp_path / "weird_type.xml"
+    p.write_text(xml, encoding="utf-8")
+    warnings: list[str] = []
+
+    items = list(parse_sms_xml(p, warnings=warnings))
+
+    assert items == []  # not silently kept with a guessed sender
+    assert len(warnings) == 1
+    assert "0" in warnings[0]
+    assert "type" in warnings[0]
+
+
+def test_unrecognized_mms_msg_box_is_skipped_not_defaulted_to_me(tmp_path):
+    # Same guess-if-not-recognized shape exists in the MMS path via msg_box -- symmetric fix.
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<smses count="1">'
+        '<mms date="1700000000000" msg_box="99" sub_id="1">'
+        "<parts><part seq=\"0\" ct=\"text/plain\" text=\"weird msg_box\" /></parts>"
+        '<addrs><addr address="+15550009999" type="137" /></addrs>'
+        "</mms>"
+        "</smses>"
+    )
+    p = tmp_path / "weird_msgbox.xml"
+    p.write_text(xml, encoding="utf-8")
+    warnings: list[str] = []
+
+    items = list(parse_sms_xml(p, warnings=warnings))
+
+    assert items == []
+    assert len(warnings) == 1
+    assert "99" in warnings[0]
+
+
+def test_well_formed_file_reports_zero_type_warnings():
+    warnings: list[str] = []
+    list(parse_sms_xml(FIX, warnings=warnings))
+    assert warnings == []

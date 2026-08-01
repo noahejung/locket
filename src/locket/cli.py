@@ -61,7 +61,7 @@ def _ingest_source(path: Path) -> tuple[list[RawItem], list[str]]:
     if suffix == ".txt":
         return list(parse_whatsapp(path, thread=path.stem, warnings=warnings)), warnings
     if suffix == ".xml":
-        return list(parse_sms_xml(path)), warnings
+        return list(parse_sms_xml(path, warnings=warnings)), warnings
     raise ValueError(f"don't know how to ingest {path} (expected .txt, .xml, or a directory)")
 
 
@@ -88,7 +88,7 @@ def _discover_corpus_sources(corpus_dir: Path) -> tuple[list[tuple[str, list[Raw
     sms_dir = corpus_dir / "sms"
     if sms_dir.is_dir():
         for xml_path in sorted(sms_dir.glob("*.xml")):
-            groups.append((f"sms:{xml_path.stem}", list(parse_sms_xml(xml_path))))
+            groups.append((f"sms:{xml_path.stem}", list(parse_sms_xml(xml_path, warnings=warnings))))
 
     ig_inbox = corpus_dir / "instagram" / "inbox"
     if ig_inbox.is_dir():

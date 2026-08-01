@@ -36,11 +36,19 @@ def _ts_from_millis(ms: str | None) -> datetime | None:
         return None
 
 
-def _parse_sms(elem) -> RawItem | None:
+def _parse_sms(elem, *, warnings: list[str] | None) -> RawItem | None:
     type_ = _val(elem, "type")
     if type_ == "3":  # draft — never sent, not part of the record
         return None
     direction = _SMS_DIRECTION.get(type_)
+    if direction is None:
+        # An unrecognized `type` code (e.g. "0", SMS Backup & Restore's "all messages"
+        # QUERY code, which should never appear on a real per-message row) must never fall
+        # through to a guessed sender -- the old code's `sender = ... if direction ==
+        # "received" else "me"` silently misattributed every such row to "me".
+        if warnings is not None:
+            warnings.append(f"sms with unrecognized type={type_!r} skipped, sender not guessed")
+        return None
     ts = _ts_from_millis(_val(elem, "date"))
     address = _val(elem, "address")
     contact_name = _val(elem, "contact_name")
@@ -55,9 +63,14 @@ def _parse_sms(elem) -> RawItem | None:
     )
 
 
-def _parse_mms(elem) -> RawItem | None:
+def _parse_mms(elem, *, warnings: list[str] | None) -> RawItem | None:
     msg_box = _val(elem, "msg_box")
     direction = _MMS_DIRECTION.get(msg_box)
+    if direction is None:
+        # Same guess-if-not-recognized shape as _parse_sms above -- symmetric fix.
+        if warnings is not None:
+            warnings.append(f"mms with unrecognized msg_box={msg_box!r} skipped, sender not guessed")
+        return None
     ts = _ts_from_millis(_val(elem, "date"))
 
     text_parts: list[str] = []
@@ -92,9 +105,11 @@ def _parse_mms(elem) -> RawItem | None:
     )
 
 
-def parse_sms_xml(path: Path) -> Iterator[RawItem]:
+def parse_sms_xml(path: Path, *, warnings: list[str] | None = None) -> Iterator[RawItem]:
+    """`warnings`, if given, gets one message appended per skipped row whose `type`/
+    `msg_box` code wasn't recognized as sent/received/draft (see _parse_sms/_parse_mms)."""
     for _, elem in etree.iterparse(str(path), tag=("sms", "mms"), resolve_entities=False):
-        item = _parse_sms(elem) if elem.tag == "sms" else _parse_mms(elem)
+        item = _parse_sms(elem, warnings=warnings) if elem.tag == "sms" else _parse_mms(elem, warnings=warnings)
         elem.clear()
         if item is not None:
             yield item
