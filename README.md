@@ -53,10 +53,12 @@ uv run python -m locket.cli profile build
 claude mcp add --scope user locket -- uv run --directory "$(pwd)" python -m locket.mcp_server
 ```
 
-Full command reference (every subcommand: `ingest`, `pipeline run`,
-`pipeline retry-given-up`, `resolve`, `label-faces`, `eval extraction|rag`,
-`profile build`, `serve`) and the exact Claude Desktop registration JSON
-block: **[`docs/demo.md`](docs/demo.md)**.
+Full command reference (every subcommand: `ingest`,
+`pipeline run [--skip-vision/--cap/--corpus-dir/--retry-failed]`,
+`pipeline retry-given-up`, `label-faces`, `resolve`, `eval extraction|rag`,
+`profile build`, `stats [--json]`, `serve`, `serve-ui [--host/--port]`)
+and the exact Claude Desktop registration JSON block:
+**[`docs/demo.md`](docs/demo.md)**.
 
 To run against your own data instead of the demo corpus, set
 `LOCKET_CORPUS_DIR` in a local `.env` (never inside this repo — see
