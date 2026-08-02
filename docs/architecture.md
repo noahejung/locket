@@ -49,7 +49,7 @@ flowchart LR
     STORE --> MCP[mcp_server.py\nsix tools, stdio]
     MCP --> CLIENT[Claude Code / Claude Desktop]
 
-    CLI[cli.py\ningest · pipeline run · resolve\nlabel-faces · eval · profile · serve] -.orchestrates.-> AWA & AIG & ASMS & APH & EXT & RES & PROF & MCP
+    CLI[cli.py\ningest · pipeline run · retry-given-up\nresolve · label-faces · eval · profile\nstats · serve · serve-ui] -.orchestrates.-> AWA & AIG & ASMS & APH & EXT & RES & PROF & MCP
 ```
 
 ## Stage table
@@ -64,7 +64,7 @@ flowchart LR
 | 5. Store | `store.py` | Postgres + pgvector (Docker) | The *only* module that runs SQL. Bi-temporal facts (`valid_at`/`invalid_at`/`expired_at`, graphiti's pattern), an append-only audit history (`fact_history`, mem0's pattern), HNSW cosine indexes on `facts.embedding` and `entities.embedding`. |
 | 6. Profile synthesis | `profile.py` | `store.py`, one haiku call per section | Deterministic scaffold (fact-kind → section grouping, chronological timeline) plus one structured-output call per section to render prose. Citations (`[fact:<id8>]`) are injected mechanically after the model call, never trusted from model output. |
 | 7. MCP server | `mcp_server.py` | `store.py`, embeddings, resolution, one haiku call each for `answer_question`'s decompose + synthesize | `mcp==2.0.0`'s `MCPServer`, stdio transport. Six tools: `search_memories`, `answer_question`, `get_profile`, `query_timeline`, `get_person`, `list_people`. The only agentic path in the system. |
-| — CLI | `cli.py` | every module above | `locket ingest / pipeline run / label-faces / resolve / eval / profile / serve` — argparse only, no framework dependency. `pipeline run` is the single entry point that chains vision → extraction → resolution → profile over a whole corpus directory. |
+| — CLI | `cli.py` | every module above | `locket ingest / pipeline run / pipeline retry-given-up / label-faces / resolve / eval / profile / stats / serve / serve-ui` — argparse only, no framework dependency. `pipeline run` is the single entry point that chains vision → extraction → resolution → profile over a whole corpus directory; `--retry-failed` first clears windows previously recorded as given-up-on so the run re-attempts exactly those (`pipeline retry-given-up` does the same clear as a standalone command). `stats [--json]` prints pipeline/store health metrics; `serve-ui` serves the tailnet-only phone chat page (`webui.py`, loopback bind by default) on top of the same `answer_question` logic the MCP server uses. |
 
 ## Boundaries (enforced by convention, not tooling)
 
