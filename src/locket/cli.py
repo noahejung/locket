@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from locket.adapters.instagram import parse_instagram_thread
+from locket.adapters.ios_backup import is_ios_backup_dir, iter_messages, read_backup_info
 from locket.adapters.photos import parse_photos
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
@@ -51,14 +53,34 @@ _PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
 # ---------------------------------------------------------------------------
 
 
-def _ingest_source(path: Path) -> tuple[list[RawItem], list[str]]:
-    """Adapter auto-detection by shape (plan's exact rule): ".txt" -> whatsapp, ".xml" ->
+def _ios_backup_passphrase(args: argparse.Namespace) -> str | None:
+    """Explicit `--passphrase` wins; falls back to LOCKET_IOS_BACKUP_PASSPHRASE so
+    `pipeline run --corpus-dir <backup root>` (which has no per-command flag of its own)
+    can still supply one without it ever appearing in shell history. None (the common
+    unencrypted case) means "don't need one" -- iter_messages only raises
+    EncryptedBackupPassphraseRequired if the backup actually turns out to be encrypted."""
+    explicit = getattr(args, "passphrase", None)
+    return explicit or os.environ.get("LOCKET_IOS_BACKUP_PASSPHRASE")
+
+
+def _ingest_source(path: Path, *, passphrase: str | None = None) -> tuple[list[RawItem], list[str]]:
+    """Adapter auto-detection by shape (plan's exact rule): an iOS backup directory
+    (Manifest.plist + Manifest.db present) -> ios_backup, ".txt" -> whatsapp, ".xml" ->
     sms, a directory containing message_*.json -> instagram, any other directory -> photos.
     Second element is any non-fatal parse warnings the adapter collected (e.g. whatsapp's
     unmatched-line count) -- callers surface these; a silently-empty result is exactly what
     the warnings exist to distinguish from "genuinely nothing here"."""
     warnings: list[str] = []
     if path.is_dir():
+        if is_ios_backup_dir(path):
+            items = list(iter_messages(path, passphrase=passphrase, warnings=warnings))
+            if items:
+                warnings.append(
+                    "iOS backup v1: does not merge iMessage/SMS/RCS threads with the same "
+                    "contact -- a contact reached over multiple services may appear as "
+                    "multiple raw_items threads (no cross-service dedup yet)"
+                )
+            return items, warnings
         if any(path.glob("message_*.json")):
             return list(parse_instagram_thread(path)), warnings
         return list(parse_photos(path, warnings=warnings)), warnings
@@ -150,6 +172,7 @@ def _run_pipeline(
     resolve_model: Any | None,
     profile_model: Any | None,
     retry_failed: bool = False,
+    ios_backup_passphrase: str | None = None,
 ) -> dict[str, Any]:
     from locket.profile import synthesize
 
@@ -160,7 +183,10 @@ def _run_pipeline(
     # extracted_windows table, same as the standalone command (not scoped to corpus_dir).
     given_up_cleared = store.clear_given_up_windows() if retry_failed else 0
 
-    groups, warnings = discover_corpus_sources(corpus_dir)
+    # ios_backup_passphrase only matters when corpus_dir itself is a live (and encrypted)
+    # backup root -- discover_corpus_sources ignores it entirely for an ordinary
+    # whatsapp/sms/instagram/photos-shaped corpus_dir.
+    groups, warnings = discover_corpus_sources(corpus_dir, ios_backup_passphrase=ios_backup_passphrase)
 
     raw_inserted = 0
     facts_created = 0
@@ -251,7 +277,10 @@ def _run_pipeline(
 
 def _cmd_ingest(args: argparse.Namespace, store: Store) -> int:
     path = Path(args.path)
-    items, warnings = _ingest_source(path)
+    if is_ios_backup_dir(path):
+        info = read_backup_info(path)
+        print(f"detected iOS backup for device {info.device_name!r} (encrypted={info.is_encrypted})")
+    items, warnings = _ingest_source(path, passphrase=_ios_backup_passphrase(args))
     inserted = store.add_raw_items(items)
     print(f"ingested {inserted} new raw item(s) from {path} ({len(items)} total in source)")
     for w in warnings:
@@ -303,6 +332,11 @@ def _cmd_pipeline_run(
         resolve_model=resolve_model,
         profile_model=profile_model,
         retry_failed=args.retry_failed,
+        # `pipeline run` has no --passphrase flag of its own (only `ingest` does) -- when
+        # --corpus-dir points straight at an encrypted backup root, set
+        # LOCKET_IOS_BACKUP_PASSPHRASE instead. _ios_backup_passphrase degrades to the env
+        # var alone via getattr's default when args has no "passphrase" attribute.
+        ios_backup_passphrase=_ios_backup_passphrase(args),
     )
     wall_seconds = time.monotonic() - started_at
     facts_added = store.fact_stats().total - facts_before
@@ -575,6 +609,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ingest = sub.add_parser("ingest", help="Parse a single export file/dir into raw_items")
     p_ingest.add_argument("path")
+    p_ingest.add_argument(
+        "--passphrase",
+        default=None,
+        help=(
+            "iOS backup password, only needed when `path` is an ENCRYPTED backup "
+            "(auto-detected from Manifest.plist) -- falls back to the "
+            "LOCKET_IOS_BACKUP_PASSPHRASE environment variable if not given here"
+        ),
+    )
 
     p_pipeline = sub.add_parser("pipeline", help="Pipeline commands")
     pipeline_sub = p_pipeline.add_subparsers(dest="pipeline_command", required=True)

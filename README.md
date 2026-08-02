@@ -2,12 +2,13 @@
 
 A privacy-first personal context engine: it ingests your own photo and
 messaging exports (WhatsApp, Instagram DMs, SMS/MMS backups, Google Photos
-Takeout), extracts typed, provenance-cited facts about your life with an
-LLM pipeline, resolves the people and places those facts mention into
-stable entities, stores everything in Postgres+pgvector, and serves the
-resulting profile to other tools over MCP (Model Context Protocol) — so you
-can ask Claude Code or Claude Desktop things like "when did I last see
-Sarah?" and get an answer that cites the exact message it came from.
+Takeout, iPhone backups' Messages history), extracts typed, provenance-cited
+facts about your life with an LLM pipeline, resolves the people and places
+those facts mention into stable entities, stores everything in
+Postgres+pgvector, and serves the resulting profile to other tools over MCP
+(Model Context Protocol) — so you can ask Claude Code or Claude Desktop
+things like "when did I last see Sarah?" and get an answer that cites the
+exact message it came from.
 
 ## Architecture
 

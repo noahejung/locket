@@ -18,15 +18,17 @@ from pathlib import Path
 
 import pytest
 
+from locket.adapters.ios_backup import compute_file_id
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
 from locket.cli import build_parser, main
 from locket.extraction.schemas import ExtractedFact, ExtractionResult
-from locket.models import FactKind
+from locket.models import FactKind, SourceKind
 from locket.store import Store
 
 DB_URL = os.environ.get("LOCKET_DB_URL", "postgresql://locket:locket@127.0.0.1:5432/locket")
 DEMO_CORPUS = Path(__file__).parent.parent / "demo_corpus"
+IOS_BACKUP_SMS_DB = Path(__file__).parent / "fixtures" / "ios_backup" / "sms.db"
 
 pytestmark = pytest.mark.db
 
@@ -135,6 +137,105 @@ def test_ingest_prints_a_warning_for_unparseable_whatsapp_lines(store, tmp_path,
     err = capsys.readouterr().err
     assert "WARNING" in err
     assert "2" in err
+
+
+# ---------------------------------------------------------------------------
+# ingest -- iOS backup auto-detection (ios_backup adapter, 2026-08-02 spec Phase 1).
+# End-to-end through the real CLI + real Store, complementing tests/test_ios_backup.py's
+# adapter-level unit coverage: proves _ingest_source/_discover_corpus_sources actually
+# route a backup directory to iter_messages rather than mistaking it for a photos/
+# instagram directory, and that the resulting RawItems really land in raw_items.
+# ---------------------------------------------------------------------------
+
+
+def _make_ios_backup_dir(tmp_path: Path) -> Path:
+    import plistlib
+    import shutil
+
+    backup_dir = tmp_path / "AAAA1111-BBBBBBBBBBBBBBBB"
+    file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+    fanout_dir = backup_dir / file_id[:2]
+    fanout_dir.mkdir(parents=True)
+    shutil.copyfile(IOS_BACKUP_SMS_DB, fanout_dir / file_id)
+    with (backup_dir / "Manifest.plist").open("wb") as fh:
+        plistlib.dump({"IsEncrypted": False}, fh)
+    with (backup_dir / "Info.plist").open("wb") as fh:
+        plistlib.dump({"Device Name": "Noah's iPhone"}, fh)
+    (backup_dir / "Manifest.db").write_bytes(b"")
+    return backup_dir
+
+
+def test_ingest_detects_ios_backup_directory_and_routes_to_ios_backup_adapter(store, tmp_path, capsys):
+    backup_dir = _make_ios_backup_dir(tmp_path)
+
+    exit_code = main(["ingest", str(backup_dir)], store=store)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "detected iOS backup" in out
+    assert "Noah's iPhone" in out
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw_items WHERE source = %s", (str(SourceKind.imessage),))
+        assert cur.fetchone()[0] == 12
+
+
+def test_ingest_ios_backup_prints_v1_cross_service_dedup_note(store, tmp_path, capsys):
+    backup_dir = _make_ios_backup_dir(tmp_path)
+
+    main(["ingest", str(backup_dir)], store=store)
+
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "cross-service" in err or "multiple raw_items threads" in err
+
+
+def test_ingest_ios_backup_reingest_is_idempotent_on_message_guid(store, tmp_path):
+    backup_dir = _make_ios_backup_dir(tmp_path)
+    main(["ingest", str(backup_dir)], store=store)
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw_items")
+        first_count = cur.fetchone()[0]
+
+    main(["ingest", str(backup_dir)], store=store)
+
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw_items")
+        assert cur.fetchone()[0] == first_count
+
+
+def test_ingest_ios_backup_encrypted_without_passphrase_raises_clear_error(store, tmp_path):
+    import plistlib
+
+    from locket.adapters.ios_backup import EncryptedBackupPassphraseRequired
+
+    backup_dir = tmp_path / "encrypted-backup"
+    backup_dir.mkdir()
+    with (backup_dir / "Manifest.plist").open("wb") as fh:
+        plistlib.dump({"IsEncrypted": True}, fh)
+    (backup_dir / "Manifest.db").write_bytes(b"")
+
+    with pytest.raises(EncryptedBackupPassphraseRequired):
+        main(["ingest", str(backup_dir)], store=store)
+
+
+def test_pipeline_run_corpus_dir_pointed_directly_at_an_ios_backup_root(store, tmp_path, capsys):
+    """--corpus-dir can point straight at a live backup root (not just a demo_corpus-
+    shaped directory tree) -- discover_corpus_sources's early-return branch."""
+    backup_dir = _make_ios_backup_dir(tmp_path)
+    extraction_model = _AlwaysOneFactModel()
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(backup_dir)],
+        store=store,
+        extraction_model=extraction_model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    assert extraction_model.calls  # the stub was actually invoked over the backup's messages
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["raw_items_inserted"] == 12
+    assert summary["sources"] == 2  # group_by_thread's two chats (1:1 + group)
 
 
 # ---------------------------------------------------------------------------

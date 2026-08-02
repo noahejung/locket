@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from locket.adapters.instagram import parse_instagram_thread
+from locket.adapters.ios_backup import group_by_thread, is_ios_backup_dir, iter_messages
 from locket.adapters.photos import parse_photos
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
@@ -30,16 +31,39 @@ from locket.models import Fact, RawItem
 from locket.store import FactRow, Store
 
 
-def discover_corpus_sources(corpus_dir: Path) -> tuple[list[tuple[str, list[RawItem]]], list[str]]:
+def discover_corpus_sources(
+    corpus_dir: Path, *, ios_backup_passphrase: str | None = None
+) -> tuple[list[tuple[str, list[RawItem]]], list[str]]:
     """(label, items) pairs, one per conversation/source, kept separate so windows() (inside
     extract_batch) never mixes unrelated threads -- chunking.windows() splits purely on
     time gaps, with no notion of "thread", so merging distinct conversations before
     windowing would let unrelated threads bleed into the same extraction window. Walks
     whatever files exist under corpus_dir/{whatsapp,sms,instagram/inbox,photos} rather than
     hardcoding filenames -- a real corpus's whatsapp/ dir won't be named team.txt/sarah.txt.
-    Second element: every adapter parse warning collected across the whole corpus."""
+    Second element: every adapter parse warning collected across the whole corpus.
+
+    If `corpus_dir` ITSELF is an iOS backup root (Manifest.plist + Manifest.db present --
+    e.g. pointed straight at `%USERPROFILE%\\Apple\\MobileSync\\Backup\\<UDID>`), the whole
+    directory is treated as one ios_backup source and grouped by raw chat_id
+    (ios_backup.group_by_thread) -- mirrored early-return, same as _ingest_source's
+    single-path handling in cli.py, since a real backup root never simultaneously has the
+    named whatsapp/sms/instagram/photos subdirectories a synthesized corpus_dir has.
+    """
     groups: list[tuple[str, list[RawItem]]] = []
     warnings: list[str] = []
+
+    if is_ios_backup_dir(corpus_dir):
+        backup_warnings: list[str] = []
+        items = list(iter_messages(corpus_dir, passphrase=ios_backup_passphrase, warnings=backup_warnings))
+        groups.extend(group_by_thread(items))
+        warnings.extend(backup_warnings)
+        if items:
+            warnings.append(
+                "iOS backup v1: does not merge iMessage/SMS/RCS threads with the same "
+                "contact -- a contact reached over multiple services may appear as "
+                "multiple raw_items threads (no cross-service dedup yet)"
+            )
+        return groups, warnings
 
     wa_dir = corpus_dir / "whatsapp"
     if wa_dir.is_dir():
