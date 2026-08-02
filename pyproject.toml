@@ -58,6 +58,25 @@ dependencies = [
   # it directly, so it stays implicit like every other transitive dep we don't touch.
   "fastapi==0.141.1",
   "uvicorn==0.52.0",
+  # ios_backup adapter, Phase 1 (2026-08-02 spec). Verified live via a 7-agent research
+  # pass against real fixtures/PyPI metadata, not assumed:
+  #   - pytypedstream: PyPI project name "pytypedstream", import name "typedstream" (do
+  #     not `import pytypedstream` -- ModuleNotFoundError). LGPL-3.0-or-later, last PyPI
+  #     release 2023-06-26 (stale but installs clean on 3.12.13, confirmed live). Tier-1
+  #     attributedBody/typedstream text extraction only -- the common path (message.text
+  #     already populated) never imports it.
+  #   - iphone-backup-decrypt: MIT, last release 2024-09-18. Used ONLY in the
+  #     auto-detected encrypted-backup branch (Manifest.plist's IsEncrypted) -- the
+  #     common unencrypted path never imports it either. Its own hard dep is
+  #     pycryptodome>=3.20.0.
+  #   - pycryptodome: BSD, has a prebuilt cp312-win_amd64 wheel (no compiler needed).
+  #     The `fastpbkdf2` optional extra is deliberately NOT added -- PyPI ships it
+  #     source-only, no Windows wheel, would fail a from-source build (needs MSVC Build
+  #     Tools) on this host; plain pycryptodome PBKDF2 is slower but a one-time, still-
+  #     cheap keybag unlock (encrypted-backups.md).
+  "pytypedstream==0.1.0",
+  "iphone-backup-decrypt==0.9.0",
+  "pycryptodome>=3.20.0",
 ]
 
 [dependency-groups]

@@ -16,6 +16,11 @@ class SourceKind(StrEnum):
     sms = "sms"
     mms = "mms"
     photo = "photo"
+    imessage = "imessage"  # ios_backup adapter (2026-08-02 spec, Phase 1) -- iMessage/SMS/
+    # RCS messages read out of sms.db in an on-disk iPhone backup. Distinct from `sms`
+    # (the SMS/MMS-XML-backup adapter) because the native record itself carries a finer-
+    # grained per-message `service` value (iMessage/SMS/rcs/iMessageLite) in RawItem.meta
+    # rather than being a whole separate export format.
 
 
 class FactKind(StrEnum):
