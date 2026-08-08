@@ -52,6 +52,14 @@ and is used only as a facts source (schema, hashing scheme, timestamp epoch,
 algorithm descriptions) — its Rust source is not ported or vendored; the
 Python implementation here is independently written from those facts.
 
+The `whatsapp_backup` adapter (Phase 2, same spec) adds no new dependency and
+follows the identical policy for the same reason `whatstk` was rejected for
+the text-export `whatsapp` adapter: `WhatsApp-Chat-Exporter` was deliberately
+NOT shelled out to or read as source — it is used nowhere in this build. The
+`ChatStorage.sqlite` schema (table/column names) implemented here comes from
+the design spec's own research notes, not from reading any third party's
+source code.
+
 Verified directly against each package's installed metadata (2026-07-30):
 the `mcp` SDK (Model Context Protocol server, `mcp_server.py`) is MIT
 licensed; `langgraph`/`langchain-core`/`langchain-anthropic`/`anthropic` are

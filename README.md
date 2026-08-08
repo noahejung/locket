@@ -2,7 +2,7 @@
 
 A privacy-first personal context engine: it ingests your own photo and
 messaging exports (WhatsApp, Instagram DMs, SMS/MMS backups, Google Photos
-Takeout, iPhone backups' Messages history), extracts typed, provenance-cited
+Takeout, iPhone backups' Messages + WhatsApp history), extracts typed, provenance-cited
 facts about your life with an LLM pipeline, resolves the people and places
 those facts mention into stable entities, stores everything in
 Postgres+pgvector, and serves the resulting profile to other tools over MCP

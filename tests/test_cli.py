@@ -239,6 +239,97 @@ def test_pipeline_run_corpus_dir_pointed_directly_at_an_ios_backup_root(store, t
 
 
 # ---------------------------------------------------------------------------
+# ingest -- WhatsApp from the same iOS backup (whatsapp_backup adapter, 2026-08-02 spec
+# Phase 2). Complements tests/test_whatsapp_backup.py's adapter-level unit coverage: proves
+# _ingest_source/discover_corpus_sources actually combine BOTH ios_backup.iter_messages
+# (sms.db) AND whatsapp_backup.iter_messages (ChatStorage.sqlite, personal domain) for the
+# same backup directory, and that both land in raw_items together.
+# ---------------------------------------------------------------------------
+
+WHATSAPP_PERSONAL_CHAT_STORAGE = (
+    Path(__file__).parent / "fixtures" / "whatsapp_backup" / "ChatStorage-personal.sqlite"
+)
+
+
+def _make_ios_backup_dir_with_whatsapp(tmp_path: Path) -> Path:
+    """Builds on _make_ios_backup_dir's sms.db-only backup directory by ALSO staging the
+    personal-domain WhatsApp fixture and replacing the placeholder empty Manifest.db with a
+    real one carrying the matching Files row -- _manifest_db_file_id (whatsapp_backup.py)
+    reads Manifest.db's actual content, unlike ios_backup.py's own sms.db lookup, which
+    never touches Manifest.db's content at all."""
+    import shutil
+    import sqlite3
+
+    from locket.adapters.whatsapp_backup import CHAT_STORAGE_RELATIVE_PATH, WHATSAPP_DOMAINS
+
+    backup_dir = _make_ios_backup_dir(tmp_path)
+
+    domain = WHATSAPP_DOMAINS["personal"]
+    file_id = compute_file_id(domain, CHAT_STORAGE_RELATIVE_PATH)
+    fanout_dir = backup_dir / file_id[:2]
+    fanout_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(WHATSAPP_PERSONAL_CHAT_STORAGE, fanout_dir / file_id)
+
+    conn = sqlite3.connect(backup_dir / "Manifest.db")
+    conn.execute("CREATE TABLE Files (fileID TEXT, domain TEXT, relativePath TEXT, flags INTEGER, file BLOB)")
+    conn.execute(
+        "INSERT INTO Files (fileID, domain, relativePath, flags) VALUES (?, ?, ?, 1)",
+        (file_id, domain, CHAT_STORAGE_RELATIVE_PATH),
+    )
+    conn.commit()
+    conn.close()
+    return backup_dir
+
+
+def test_ingest_ios_backup_also_ingests_whatsapp_from_the_same_backup(store, tmp_path):
+    backup_dir = _make_ios_backup_dir_with_whatsapp(tmp_path)
+
+    exit_code = main(["ingest", str(backup_dir)], store=store)
+
+    assert exit_code == 0
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw_items WHERE source = %s", (str(SourceKind.imessage),))
+        assert cur.fetchone()[0] == 12
+        cur.execute("SELECT count(*) FROM raw_items WHERE source = %s", (str(SourceKind.whatsapp),))
+        assert cur.fetchone()[0] == 8
+        cur.execute("SELECT count(*) FROM raw_items")
+        assert cur.fetchone()[0] == 20
+
+
+def test_ingest_ios_backup_whatsapp_reingest_is_idempotent_on_stanza_id(store, tmp_path):
+    backup_dir = _make_ios_backup_dir_with_whatsapp(tmp_path)
+    main(["ingest", str(backup_dir)], store=store)
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw_items")
+        first_count = cur.fetchone()[0]
+
+    main(["ingest", str(backup_dir)], store=store)
+
+    with store._conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM raw_items")
+        assert cur.fetchone()[0] == first_count
+
+
+def test_pipeline_run_ios_backup_root_includes_whatsapp_sources(store, tmp_path, capsys):
+    backup_dir = _make_ios_backup_dir_with_whatsapp(tmp_path)
+    extraction_model = _AlwaysOneFactModel()
+
+    exit_code = main(
+        ["pipeline", "run", "--skip-vision", "--corpus-dir", str(backup_dir)],
+        store=store,
+        extraction_model=extraction_model,
+        profile_model=_EchoProfileModel(),
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["raw_items_inserted"] == 20  # 12 iMessage + 8 WhatsApp
+    # group_by_thread's 2 iMessage chats (1:1 + group) + whatsapp_backup.group_by_thread's
+    # 2 personal WhatsApp chats (1:1 + group) -- Business domain absent from this fixture.
+    assert summary["sources"] == 4
+
+
+# ---------------------------------------------------------------------------
 # pipeline run -- the new orchestration logic, --skip-vision + stubbed extraction/profile
 # ---------------------------------------------------------------------------
 

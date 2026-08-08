@@ -53,7 +53,10 @@ _NS_MAGNITUDE_THRESHOLD = 1_000_000_000_000  # raw values at/above this are nano
 
 
 class IosBackupError(Exception):
-    """Base for every ios_backup adapter error. Deliberately loud everywhere it's raised
+    """Base for every backup-reading adapter's error -- ios_backup.py (Messages/sms.db) AND
+    whatsapp_backup.py (Phase 2, ChatStorage.sqlite), which reuses these two exception
+    classes directly rather than defining its own sibling hierarchy, since the messages here
+    were never iMessage-specific to begin with. Deliberately loud everywhere it's raised
     (locket's adapter convention, restated by the Phase 1 spec) -- a caller must never see
     a silent empty result where a clear error was possible instead."""
 

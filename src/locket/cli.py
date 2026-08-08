@@ -30,6 +30,7 @@ from locket.adapters.ios_backup import is_ios_backup_dir, iter_messages, read_ba
 from locket.adapters.photos import parse_photos
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
+from locket.adapters.whatsapp_backup import iter_messages as iter_whatsapp_messages
 from locket.config import Settings
 from locket.extraction.chunking import windows
 from locket.extraction.graph import window_hash
@@ -80,6 +81,11 @@ def _ingest_source(path: Path, *, passphrase: str | None = None) -> tuple[list[R
                     "contact -- a contact reached over multiple services may appear as "
                     "multiple raw_items threads (no cross-service dedup yet)"
                 )
+            # Phase 2: same backup dir may also carry a WhatsApp ChatStorage.sqlite (personal
+            # and/or Business) -- appended to the same flat item list `ingest` already
+            # returns (unlike pipeline.py's discover_corpus_sources, `ingest` never grouped
+            # by thread to begin with).
+            items = items + list(iter_whatsapp_messages(path, passphrase=passphrase, warnings=warnings))
             return items, warnings
         if any(path.glob("message_*.json")):
             return list(parse_instagram_thread(path)), warnings

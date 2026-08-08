@@ -25,6 +25,8 @@ from locket.adapters.ios_backup import group_by_thread, is_ios_backup_dir, iter_
 from locket.adapters.photos import parse_photos
 from locket.adapters.sms_xml import parse_sms_xml
 from locket.adapters.whatsapp import parse_whatsapp
+from locket.adapters.whatsapp_backup import group_by_thread as group_whatsapp_by_thread
+from locket.adapters.whatsapp_backup import iter_messages as iter_whatsapp_messages
 from locket.embeddings import get_backend
 from locket.extraction.graph import extract_batch
 from locket.models import Fact, RawItem
@@ -44,10 +46,11 @@ def discover_corpus_sources(
 
     If `corpus_dir` ITSELF is an iOS backup root (Manifest.plist + Manifest.db present --
     e.g. pointed straight at `%USERPROFILE%\\Apple\\MobileSync\\Backup\\<UDID>`), the whole
-    directory is treated as one ios_backup source and grouped by raw chat_id
-    (ios_backup.group_by_thread) -- mirrored early-return, same as _ingest_source's
-    single-path handling in cli.py, since a real backup root never simultaneously has the
-    named whatsapp/sms/instagram/photos subdirectories a synthesized corpus_dir has.
+    directory is treated as up to two sources -- Messages (ios_backup.group_by_thread) and
+    WhatsApp (whatsapp_backup.group_by_thread, Phase 2, probing both the personal and
+    Business app domains) -- mirrored early-return, same as _ingest_source's single-path
+    handling in cli.py, since a real backup root never simultaneously has the named
+    whatsapp/sms/instagram/photos subdirectories a synthesized corpus_dir has.
     """
     groups: list[tuple[str, list[RawItem]]] = []
     warnings: list[str] = []
@@ -63,6 +66,14 @@ def discover_corpus_sources(
                 "contact -- a contact reached over multiple services may appear as "
                 "multiple raw_items threads (no cross-service dedup yet)"
             )
+
+        whatsapp_warnings: list[str] = []
+        whatsapp_items = list(
+            iter_whatsapp_messages(corpus_dir, passphrase=ios_backup_passphrase, warnings=whatsapp_warnings)
+        )
+        groups.extend(group_whatsapp_by_thread(whatsapp_items))
+        warnings.extend(whatsapp_warnings)
+
         return groups, warnings
 
     wa_dir = corpus_dir / "whatsapp"
